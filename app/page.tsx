@@ -67,14 +67,18 @@ function calcSidePots(
   playerList: Player[],
   contribs: Record<number, number>
 ): { amount: number; eligibleIds: number[] }[] {
-  const sorted = [...playerList]
-    .filter((p) => (contribs[p.id] ?? 0) > 0)
-    .sort((a, b) => (contribs[a.id] ?? 0) - (contribs[b.id] ?? 0));
+  // Only all-in players create cap levels (folded players don't split the pot)
+  const allInCaps = [...playerList]
+    .filter((p) => p.allIn && !p.folded && (contribs[p.id] ?? 0) > 0)
+    .map((p) => contribs[p.id] ?? 0)
+    .sort((a, b) => a - b);
+  const maxContrib = Math.max(0, ...playerList.map((p) => contribs[p.id] ?? 0));
+  const caps = [...new Set([...allInCaps, maxContrib])].sort((a, b) => a - b).filter((c) => c > 0);
+  if (caps.length === 0) return [];
+
   const pots: { amount: number; eligibleIds: number[] }[] = [];
   let prevCap = 0;
-  for (const player of sorted) {
-    const cap = contribs[player.id] ?? 0;
-    if (cap <= prevCap) continue;
+  for (const cap of caps) {
     const delta = cap - prevCap;
     let potAmount = 0;
     const eligible: number[] = [];
