@@ -104,8 +104,8 @@ export default function Home() {
   const [players, setPlayers] = useState<Player[]>([]);
   const [newPlayerName, setNewPlayerName] = useState("");
   const [startingChips, setStartingChips] = useState(1000);
-  const [sbAmount, setSbAmount] = useState(10);
-  const [bbAmount, setBbAmount] = useState(20);
+  const [sbAmount, setSbAmount] = useState(5);
+  const [bbAmount, setBbAmount] = useState(10);
   const [pot, setPot] = useState(0);
   const [betInput, setBetInput] = useState<Record<number, string>>({});
   const [winner, setWinner] = useState<number | null>(null);
@@ -121,6 +121,7 @@ export default function Home() {
   const [bbIdx, setBbIdx] = useState(0);
   const [rebuyAmount, setRebuyAmount] = useState(1000);
   const [actedThisStreet, setActedThisStreet] = useState<number[]>([]);
+  const [showSettings, setShowSettings] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
   // ── localStorage load ─────────────────────────────────────────────
@@ -132,8 +133,8 @@ export default function Home() {
         setGameState(s.gameState ?? "setup");
         setPlayers(s.players ?? []);
         setStartingChips(s.startingChips ?? 1000);
-        setSbAmount(s.sbAmount ?? 10);
-        setBbAmount(s.bbAmount ?? 20);
+        setSbAmount(s.sbAmount ?? 5);
+        setBbAmount(s.bbAmount ?? 10);
         setPot(s.pot ?? 0);
         setWinner(s.winner ?? null);
         setStreet(s.street ?? "preflop");
@@ -260,12 +261,17 @@ export default function Home() {
   const autoAwardPot = (winnerId: number, updatedPlayers: Player[]) => {
     const totalBets = updatedPlayers.reduce((sum, p) => sum + p.bet, 0);
     const totalPot = pot + totalBets;
-    setPlayers(updatedPlayers.map((p) =>
+    const finalPlayers = updatedPlayers.map((p) =>
       p.id === winnerId ? { ...p, chips: p.chips + totalPot, bet: 0 } : { ...p, bet: 0 }
-    ));
-    setWinner(winnerId);
-    setPot(0);
-    setGameState("result");
+    );
+    if (finalPlayers.some((p) => p.chips === 0)) {
+      setPlayers(finalPlayers);
+      setWinner(winnerId);
+      setPot(0);
+      setGameState("result");
+    } else {
+      startNextHand(finalPlayers);
+    }
   };
 
   // helper: is the current betting round complete?
@@ -279,11 +285,14 @@ export default function Home() {
     prev.includes(playerId) ? prev : [...prev, playerId];
 
   const placeBet = (playerId: number) => {
+    // input = desired total chips out this street (including already committed)
     const amount = parseInt(betInput[playerId] || "0");
     if (isNaN(amount) || amount <= 0) return;
     const player = players.find((p) => p.id === playerId);
     if (!player) return;
-    const actual = Math.min(amount, player.chips);
+    const toAdd = Math.max(0, amount - player.bet);
+    if (toAdd <= 0) { setBetInput((prev) => ({ ...prev, [playerId]: "" })); return; }
+    const actual = Math.min(toAdd, player.chips);
     const newBet = player.bet + actual;
     const newChips = player.chips - actual;
     const isAllIn = newChips === 0;
@@ -311,11 +320,16 @@ export default function Home() {
     const updated = players.map((p) =>
       p.id !== playerId ? p : { ...p, chips: newChips, bet: p.bet + callAmount, allIn: newChips === 0 }
     );
-    addContrib(playerId, callAmount);
+    const newContrib = { ...handContrib, [playerId]: (handContrib[playerId] ?? 0) + callAmount };
+    setHandContrib(newContrib);
     const newActed = markActed(playerId, actedThisStreet);
     const streetIdx = STREETS.indexOf(street);
-    if (isStreetComplete(updated, newActed, currentHighBet) && streetIdx < STREETS.length - 1) {
-      advanceStreetWith(updated);
+    if (isStreetComplete(updated, newActed, currentHighBet)) {
+      if (streetIdx < STREETS.length - 1) {
+        advanceStreetWith(updated);
+      } else {
+        openShowdownWith(updated, newContrib);
+      }
     } else {
       setPlayers(updated);
       setActedThisStreet(newActed);
@@ -346,8 +360,12 @@ export default function Home() {
     }
     const newActed = markActed(playerId, actedThisStreet);
     const streetIdx = STREETS.indexOf(street);
-    if (isStreetComplete(updated, newActed, currentHighBet) && streetIdx < STREETS.length - 1) {
-      advanceStreetWith(updated);
+    if (isStreetComplete(updated, newActed, currentHighBet)) {
+      if (streetIdx < STREETS.length - 1) {
+        advanceStreetWith(updated);
+      } else {
+        openShowdownWith(updated, handContrib);
+      }
     } else {
       setPlayers(updated);
       setActedThisStreet(newActed);
@@ -358,8 +376,12 @@ export default function Home() {
   const check = (playerId: number) => {
     const newActed = markActed(playerId, actedThisStreet);
     const streetIdx = STREETS.indexOf(street);
-    if (isStreetComplete(players, newActed, currentHighBet) && streetIdx < STREETS.length - 1) {
-      advanceStreetWith(players);
+    if (isStreetComplete(players, newActed, currentHighBet)) {
+      if (streetIdx < STREETS.length - 1) {
+        advanceStreetWith(players);
+      } else {
+        openShowdownWith(players, handContrib);
+      }
     } else {
       setActedThisStreet(newActed);
       afterAction(playerId, players);
@@ -375,7 +397,7 @@ export default function Home() {
 
   // ── Street / Showdown ─────────────────────────────────────────────
 
-  // advance street with a given player list (used by auto-advance and manual button)
+  // advance street with a given player list
   const advanceStreetWith = (list: Player[]) => {
     const totalBets = list.reduce((sum, p) => sum + p.bet, 0);
     const idx = STREETS.indexOf(street);
@@ -390,15 +412,19 @@ export default function Home() {
 
   const nextStreet = () => advanceStreetWith(players);
 
-  const openShowdown = () => {
-    const totalBets = players.reduce((sum, p) => sum + p.bet, 0);
-    const pots = calcSidePots(players, handContrib);
+  // open showdown with an explicit player list and contrib map (for auto-trigger)
+  const openShowdownWith = (list: Player[], contrib: Record<number, number>) => {
+    const totalBets = list.reduce((sum, p) => sum + p.bet, 0);
+    const pots = calcSidePots(list, contrib);
     setPot((prev) => prev + totalBets);
-    setPlayers((prev) => prev.map((p) => ({ ...p, bet: 0 })));
+    setPlayers(list.map((p) => ({ ...p, bet: 0 })));
+    setActedThisStreet([]);
     setFrozenPots(
       pots.map((p) => ({ ...p, winnerId: null, splitMode: false, splitSelectedIds: [] }))
     );
   };
+
+  const openShowdown = () => openShowdownWith(players, handContrib);
 
   // Fix 7: per-pot split in showdown
   const awardFrozenPot = (potIndex: number, winnerId: number) => {
@@ -450,20 +476,13 @@ export default function Home() {
     if (updated.every((p) => p.winnerId !== null)) setWinner(ids[0]);
   };
 
-  const finishShowdown = () => { setPot(0); setGameState("result"); };
-
-  // ── Simple award (no all-in) ──────────────────────────────────────
-  const awardPot = (winnerId: number) => {
-    const totalBets = players.reduce((sum, p) => sum + p.bet, 0);
-    const totalPot = pot + totalBets;
-    setPlayers((prev) =>
-      prev.map((p) =>
-        p.id === winnerId ? { ...p, chips: p.chips + totalPot, bet: 0 } : { ...p, bet: 0 }
-      )
-    );
-    setWinner(winnerId);
+  const finishShowdown = () => {
     setPot(0);
-    setGameState("result");
+    if (players.some((p) => p.chips === 0)) {
+      setGameState("result");
+    } else {
+      nextHand();
+    }
   };
 
   const toggleSplitWinner = (id: number) =>
@@ -494,10 +513,9 @@ export default function Home() {
     );
 
   // ── Next hand / Reset ─────────────────────────────────────────────
-  const nextHand = () => {
-    // Fix 2: rotate dealer only among players with chips
-    const nextDealer = rotateDealerIdx(dealerIndex, players);
-    const { list, contribs, firstActive, sb, bb } = initHand(nextDealer, players);
+  const startNextHand = (basePlayers: Player[]) => {
+    const nextDealer = rotateDealerIdx(dealerIndex, basePlayers);
+    const { list, contribs, firstActive, sb, bb } = initHand(nextDealer, basePlayers);
     setDealerIndex(nextDealer);
     setPlayers(list);
     setHandContrib(contribs);
@@ -512,8 +530,11 @@ export default function Home() {
     setSbIdx(sb);
     setBbIdx(bb);
     setActedThisStreet([]);
+    setShowSettings(false);
     setGameState("betting");
   };
+
+  const nextHand = () => startNextHand(players);
 
   const resetGame = () => {
     setGameState("setup");
@@ -643,6 +664,36 @@ export default function Home() {
       {/* ===== BETTING ===== */}
       {gameState === "betting" && (
         <div className="max-w-lg mx-auto space-y-4">
+
+          {/* Settings panel */}
+          <div className="bg-green-800 rounded-xl overflow-hidden">
+            <button
+              onClick={() => setShowSettings((v) => !v)}
+              className="w-full flex justify-between items-center px-4 py-2 text-sm text-green-300 hover:text-white"
+            >
+              <span>⚙ ゲーム設定</span>
+              <span>{showSettings ? "▲" : "▼"}</span>
+            </button>
+            {showSettings && (
+              <div className="px-4 pb-4 space-y-2 border-t border-green-700 pt-3">
+                {[
+                  { label: "SB", value: sbAmount, set: setSbAmount },
+                  { label: "BB", value: bbAmount, set: setBbAmount },
+                  { label: "リバイ上限", value: rebuyAmount, set: setRebuyAmount },
+                ].map(({ label, value, set }) => (
+                  <div key={label} className="flex items-center gap-2">
+                    <label className="text-sm whitespace-nowrap w-20">{label}</label>
+                    <input
+                      type="number"
+                      value={value}
+                      onChange={(e) => set(Number(e.target.value))}
+                      className="flex-1 bg-green-700 rounded px-3 py-1 text-right"
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
 
           {/* Street + Pot */}
           <div className="bg-green-800 rounded-xl p-4">
@@ -860,7 +911,7 @@ export default function Home() {
                       <div className="flex gap-2 flex-wrap">
                         <input
                           type="number"
-                          placeholder="ベット額"
+                          placeholder="合計ベット額"
                           value={betInput[p.id] || ""}
                           onChange={(e) =>
                             setBetInput((prev) => ({ ...prev, [p.id]: e.target.value }))
@@ -869,7 +920,7 @@ export default function Home() {
                           className="flex-1 min-w-0 bg-green-700 rounded px-3 py-1 text-right"
                         />
                         <button onClick={() => placeBet(p.id)} className="bg-blue-500 hover:bg-blue-400 px-3 py-1 rounded font-bold text-sm">
-                          BET
+                          {(street === "preflop" ? currentHighBet > bbAmount : currentHighBet > 0) ? "RAISE" : "BET"}
                         </button>
                         {callAmount > 0 ? (
                           <button onClick={() => callBet(p.id)} className="bg-green-500 hover:bg-green-400 px-3 py-1 rounded font-bold text-sm">
@@ -890,56 +941,10 @@ export default function Home() {
                     </>
                   )}
 
-                  {/* Award button (no all-in, no showdown) */}
-                  {!p.folded && !frozenPots && !hasAllIn && (
-                    <div className="pt-1">
-                      {splitMode ? (
-                        <button
-                          onClick={() => toggleSplitWinner(p.id)}
-                          className={`w-full py-1 rounded text-sm font-bold ${
-                            splitWinnerIds.includes(p.id)
-                              ? "bg-purple-500 hover:bg-purple-400"
-                              : "bg-green-700 hover:bg-green-600 text-green-300"
-                          }`}
-                        >
-                          {splitWinnerIds.includes(p.id) ? "✓ " : ""}勝者候補: {p.name}
-                        </button>
-                      ) : (
-                        <button
-                          onClick={() => awardPot(p.id)}
-                          className="w-full bg-yellow-500 hover:bg-yellow-400 text-black font-bold py-1 rounded text-sm"
-                        >
-                          勝者: {p.name} にポットを付与
-                        </button>
-                      )}
-                    </div>
-                  )}
                 </div>
               );
             })}
           </div>
-
-          {/* Split pot controls */}
-          {!frozenPots && !hasAllIn && (
-            <div className="flex gap-2">
-              <button
-                onClick={() => { setSplitMode((v) => !v); setSplitWinnerIds([]); }}
-                className={`flex-1 py-2 rounded font-bold text-sm ${
-                  splitMode ? "bg-purple-600 hover:bg-purple-500" : "bg-green-700 hover:bg-green-600"
-                }`}
-              >
-                {splitMode ? "Split Mode: ON" : "Split (引き分け)"}
-              </button>
-              {splitMode && splitWinnerIds.length >= 2 && (
-                <button
-                  onClick={splitPot}
-                  className="flex-1 bg-purple-500 hover:bg-purple-400 font-bold py-2 rounded text-sm"
-                >
-                  {splitWinnerIds.length}人で分割
-                </button>
-              )}
-            </div>
-          )}
 
           <button onClick={resetGame} className="w-full text-sm text-gray-400 hover:text-white py-2">
             最初からやり直す
@@ -950,27 +955,6 @@ export default function Home() {
       {/* ===== RESULT ===== */}
       {gameState === "result" && (
         <div className="max-w-md mx-auto space-y-4">
-          <div className="bg-green-800 rounded-xl p-6 text-center">
-            <div className="text-5xl mb-2">🏆</div>
-            <div className="text-2xl font-bold text-yellow-400">
-              {players.find((p) => p.id === winner)?.name} が勝利！
-            </div>
-          </div>
-
-          <div className="bg-green-800 rounded-xl p-4 space-y-2">
-            <h2 className="font-semibold text-lg">チップ状況</h2>
-            {[...players].sort((a, b) => b.chips - a.chips).map((p) => (
-              <div
-                key={p.id}
-                className={`flex justify-between items-center px-3 py-2 rounded ${
-                  p.id === winner ? "bg-yellow-900" : p.chips === 0 ? "bg-gray-700" : "bg-green-700"
-                }`}
-              >
-                <span>{p.id === winner ? "👑 " : p.chips === 0 ? "💀 " : ""}{p.name}</span>
-                <span className="font-mono text-yellow-300">{p.chips} chips</span>
-              </div>
-            ))}
-          </div>
 
           {/* Rebuy for broke players */}
           {brokePlayers.length > 0 && (
