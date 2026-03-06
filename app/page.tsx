@@ -539,6 +539,36 @@ export default function Home() {
   const liveSidePots = hasAllIn && !frozenPots ? calcSidePots(players, handContrib) : [];
   const brokePlayers = players.filter((p) => p.chips === 0);
 
+  // quick bet options depend on street and whether a bet is already in
+  const quickBets: { label: string; val: number }[] = (() => {
+    const p3 = Math.floor(totalCurrentPot / 3);
+    const p2 = Math.floor(totalCurrentPot / 2);
+    const p34 = Math.floor(totalCurrentPot * 3 / 4);
+    const b25 = Math.floor(currentHighBet * 2.5);
+    const b4 = currentHighBet * 4;
+    if (street === "preflop" && currentHighBet <= bbAmount) {
+      // first bet preflop: 2.5BB / 3BB
+      return [
+        { label: `2.5BB (${Math.floor(bbAmount * 2.5)})`, val: Math.floor(bbAmount * 2.5) },
+        { label: `3BB (${bbAmount * 3})`, val: bbAmount * 3 },
+      ];
+    } else if (currentHighBet === 0) {
+      // first bet post-flop: pot fractions
+      return [
+        { label: `1/3P (${p3})`, val: p3 },
+        { label: `1/2P (${p2})`, val: p2 },
+        { label: `3/4P (${p34})`, val: p34 },
+        { label: `1P (${totalCurrentPot})`, val: totalCurrentPot },
+      ];
+    } else {
+      // bet already in: raise sizing
+      return [
+        { label: `×2.5 (${b25})`, val: b25 },
+        { label: `×4 (${b4})`, val: b4 },
+      ];
+    }
+  })();
+
   // ── Render ────────────────────────────────────────────────────────
   return (
     <main className="min-h-screen bg-green-900 text-white p-4">
@@ -816,12 +846,7 @@ export default function Home() {
                     <>
                       <div className="flex gap-1 flex-wrap items-center">
                         <span className="text-xs text-green-400">クイック:</span>
-                        {[
-                          { label: `BB×2 (${bbAmount * 2})`, val: bbAmount * 2 },
-                          { label: `BB×3 (${bbAmount * 3})`, val: bbAmount * 3 },
-                          { label: `½Pot (${Math.floor(totalCurrentPot / 2)})`, val: Math.floor(totalCurrentPot / 2) },
-                          { label: `1Pot (${totalCurrentPot})`, val: totalCurrentPot },
-                        ].map(({ label, val }) => (
+                        {quickBets.map(({ label, val }) => (
                           <button
                             key={label}
                             onClick={() => quickBet(p.id, val)}
