@@ -120,6 +120,7 @@ export default function Home() {
   const [sbIdx, setSbIdx] = useState(0);
   const [bbIdx, setBbIdx] = useState(0);
   const [rebuyAmount, setRebuyAmount] = useState(1000);
+  const [actedThisStreet, setActedThisStreet] = useState<number[]>([]);
   const [loaded, setLoaded] = useState(false);
 
   // ── localStorage load ─────────────────────────────────────────────
@@ -144,6 +145,7 @@ export default function Home() {
         setSbIdx(s.sbIdx ?? 0);
         setBbIdx(s.bbIdx ?? 0);
         setRebuyAmount(s.rebuyAmount ?? s.addonAmount ?? 1000);
+        setActedThisStreet(s.actedThisStreet ?? []);
       }
     } catch {}
     setLoaded(true);
@@ -158,13 +160,13 @@ export default function Home() {
         JSON.stringify({
           gameState, players, startingChips, sbAmount, bbAmount, pot, winner,
           street, dealerIndex, currentHighBet, activePlayerIndex, handContrib,
-          frozenPots, sbIdx, bbIdx, rebuyAmount,
+          frozenPots, sbIdx, bbIdx, rebuyAmount, actedThisStreet,
         })
       );
     } catch {}
   }, [loaded, gameState, players, startingChips, sbAmount, bbAmount, pot, winner,
     street, dealerIndex, currentHighBet, activePlayerIndex, handContrib,
-    frozenPots, sbIdx, bbIdx, rebuyAmount]);
+    frozenPots, sbIdx, bbIdx, rebuyAmount, actedThisStreet]);
 
   // ── Internal helpers ──────────────────────────────────────────────
   const nextActiveFrom = (fromIdx: number, list: Player[]): number => {
@@ -241,6 +243,7 @@ export default function Home() {
     setActivePlayerIndex(firstActive);
     setSbIdx(sb);
     setBbIdx(bb);
+    setActedThisStreet([]);
     setGameState("betting");
   };
 
@@ -265,7 +268,16 @@ export default function Home() {
     setGameState("result");
   };
 
-  // Fix 5: minimum raise check
+  // helper: is the current betting round complete?
+  const isStreetComplete = (list: Player[], acted: number[], highBet: number): boolean => {
+    const active = list.filter((p) => !p.folded && !p.allIn);
+    if (active.length === 0) return true;
+    return active.every((p) => acted.includes(p.id) && p.bet >= highBet);
+  };
+
+  const markActed = (playerId: number, prev: number[]) =>
+    prev.includes(playerId) ? prev : [...prev, playerId];
+
   const placeBet = (playerId: number) => {
     const amount = parseInt(betInput[playerId] || "0");
     if (isNaN(amount) || amount <= 0) return;
@@ -275,7 +287,6 @@ export default function Home() {
     const newBet = player.bet + actual;
     const newChips = player.chips - actual;
     const isAllIn = newChips === 0;
-    // Must be at least a call unless going all-in
     if (!isAllIn && currentHighBet > 0 && newBet < currentHighBet) {
       setBetInput((prev) => ({ ...prev, [playerId]: "" }));
       return;
@@ -287,6 +298,7 @@ export default function Home() {
     setCurrentHighBet((prev) => Math.max(prev, newBet));
     addContrib(playerId, actual);
     setBetInput((prev) => ({ ...prev, [playerId]: "" }));
+    setActedThisStreet((prev) => markActed(playerId, prev));
     afterAction(playerId, updated);
   };
 
@@ -299,9 +311,16 @@ export default function Home() {
     const updated = players.map((p) =>
       p.id !== playerId ? p : { ...p, chips: newChips, bet: p.bet + callAmount, allIn: newChips === 0 }
     );
-    setPlayers(updated);
     addContrib(playerId, callAmount);
-    afterAction(playerId, updated);
+    const newActed = markActed(playerId, actedThisStreet);
+    const streetIdx = STREETS.indexOf(street);
+    if (isStreetComplete(updated, newActed, currentHighBet) && streetIdx < STREETS.length - 1) {
+      advanceStreetWith(updated);
+    } else {
+      setPlayers(updated);
+      setActedThisStreet(newActed);
+      afterAction(playerId, updated);
+    }
   };
 
   const doAllIn = (playerId: number) => {
@@ -314,10 +333,10 @@ export default function Home() {
     setPlayers(updated);
     setCurrentHighBet((prev) => Math.max(prev, newBet));
     addContrib(playerId, player.chips);
+    setActedThisStreet((prev) => markActed(playerId, prev));
     afterAction(playerId, updated);
   };
 
-  // Fix 1 & 4: fold detects last player
   const fold = (playerId: number) => {
     const updated = players.map((p) => (p.id === playerId ? { ...p, folded: true } : p));
     const remaining = updated.filter((p) => !p.folded);
@@ -325,32 +344,51 @@ export default function Home() {
       autoAwardPot(remaining[0].id, updated);
       return;
     }
-    setPlayers(updated);
-    afterAction(playerId, updated);
+    const newActed = markActed(playerId, actedThisStreet);
+    const streetIdx = STREETS.indexOf(street);
+    if (isStreetComplete(updated, newActed, currentHighBet) && streetIdx < STREETS.length - 1) {
+      advanceStreetWith(updated);
+    } else {
+      setPlayers(updated);
+      setActedThisStreet(newActed);
+      afterAction(playerId, updated);
+    }
   };
 
-  const check = (playerId: number) => afterAction(playerId, players);
+  const check = (playerId: number) => {
+    const newActed = markActed(playerId, actedThisStreet);
+    const streetIdx = STREETS.indexOf(street);
+    if (isStreetComplete(players, newActed, currentHighBet) && streetIdx < STREETS.length - 1) {
+      advanceStreetWith(players);
+    } else {
+      setActedThisStreet(newActed);
+      afterAction(playerId, players);
+    }
+  };
 
-  // Fix 3 & 5: quick bet accounts for call amount (call + raise)
-  const quickBet = (playerId: number, raiseAboveCall: number) => {
+  // quick bet: set input to exact amount (capped at chips)
+  const quickBet = (playerId: number, amount: number) => {
     const player = players.find((p) => p.id === playerId);
     if (!player) return;
-    const callAmt = Math.max(0, currentHighBet - player.bet);
-    const total = Math.min(callAmt + Math.floor(raiseAboveCall), player.chips);
-    setBetInput((prev) => ({ ...prev, [playerId]: String(total) }));
+    setBetInput((prev) => ({ ...prev, [playerId]: String(Math.min(Math.floor(amount), player.chips)) }));
   };
 
   // ── Street / Showdown ─────────────────────────────────────────────
-  const nextStreet = () => {
-    const totalBets = players.reduce((sum, p) => sum + p.bet, 0);
+
+  // advance street with a given player list (used by auto-advance and manual button)
+  const advanceStreetWith = (list: Player[]) => {
+    const totalBets = list.reduce((sum, p) => sum + p.bet, 0);
     const idx = STREETS.indexOf(street);
     if (idx < STREETS.length - 1) setStreet(STREETS[idx + 1]);
     setPot((prev) => prev + totalBets);
-    const updated = players.map((p) => ({ ...p, bet: 0 }));
-    setPlayers(updated);
+    const cleared = list.map((p) => ({ ...p, bet: 0 }));
+    setPlayers(cleared);
     setCurrentHighBet(0);
-    setActivePlayerIndex(nextActiveFrom(dealerIndex, updated));
+    setActivePlayerIndex(nextActiveFrom(dealerIndex, cleared));
+    setActedThisStreet([]);
   };
+
+  const nextStreet = () => advanceStreetWith(players);
 
   const openShowdown = () => {
     const totalBets = players.reduce((sum, p) => sum + p.bet, 0);
@@ -473,6 +511,7 @@ export default function Home() {
     setActivePlayerIndex(firstActive);
     setSbIdx(sb);
     setBbIdx(bb);
+    setActedThisStreet([]);
     setGameState("betting");
   };
 
@@ -730,7 +769,7 @@ export default function Home() {
               const position = getPositionLabel(playerIndex);
               const callAmount = Math.min(currentHighBet - p.bet, p.chips);
               const isActive = playerIndex === activePlayerIndex && !p.folded && !p.allIn && !frozenPots;
-              const canAct = !p.folded && !p.allIn && !frozenPots;
+
               // Fix 6: BB option indicator
               const isBbOption = street === "preflop" && playerIndex === bbIdx && isActive;
 
@@ -773,16 +812,15 @@ export default function Home() {
 
                   {p.bet > 0 && <div className="text-sm text-blue-300">ベット中: {p.bet}</div>}
 
-                  {canAct && (
+                  {isActive && (
                     <>
-                      {/* Fix 3 & 5: quick bets = call + raise */}
                       <div className="flex gap-1 flex-wrap items-center">
                         <span className="text-xs text-green-400">クイック:</span>
                         {[
-                          { label: "BB×2", val: bbAmount * 2 },
-                          { label: "BB×3", val: bbAmount * 3 },
-                          { label: "½ Pot", val: totalCurrentPot * 0.5 },
-                          { label: "1 Pot", val: totalCurrentPot },
+                          { label: `BB×2 (${bbAmount * 2})`, val: bbAmount * 2 },
+                          { label: `BB×3 (${bbAmount * 3})`, val: bbAmount * 3 },
+                          { label: `½Pot (${Math.floor(totalCurrentPot / 2)})`, val: Math.floor(totalCurrentPot / 2) },
+                          { label: `1Pot (${totalCurrentPot})`, val: totalCurrentPot },
                         ].map(({ label, val }) => (
                           <button
                             key={label}
