@@ -11,7 +11,7 @@ type Player = {
   allIn: boolean;
 };
 
-type GameState = "setup" | "betting" | "result";
+type GameState = "setup" | "betting" | "result" | "ended";
 type Street = "preflop" | "flop" | "turn" | "river";
 
 type FrozenPot = {
@@ -126,6 +126,7 @@ export default function Home() {
   const [rebuyAmount, setRebuyAmount] = useState(1000);
   const [actedThisStreet, setActedThisStreet] = useState<number[]>([]);
   const [showSettings, setShowSettings] = useState(false);
+  const [showEndConfirm, setShowEndConfirm] = useState(false);
   const [sessionStartChips, setSessionStartChips] = useState<Record<number, number>>({});
   const [totalRebuyChips, setTotalRebuyChips] = useState<Record<number, number>>({});
   const [loaded, setLoaded] = useState(false);
@@ -297,7 +298,6 @@ export default function Home() {
     prev.includes(playerId) ? prev : [...prev, playerId];
 
   const placeBet = (playerId: number) => {
-    // input = desired total chips out this street (including already committed)
     const amount = parseInt(betInput[playerId] || "0");
     if (isNaN(amount) || amount <= 0) return;
     const player = players.find((p) => p.id === playerId);
@@ -308,6 +308,7 @@ export default function Home() {
     const newBet = player.bet + actual;
     const newChips = player.chips - actual;
     const isAllIn = newChips === 0;
+    const newHighBet = Math.max(currentHighBet, newBet);
     if (!isAllIn && currentHighBet > 0 && newBet < currentHighBet) {
       setBetInput((prev) => ({ ...prev, [playerId]: "" }));
       return;
@@ -315,12 +316,18 @@ export default function Home() {
     const updated = players.map((p) =>
       p.id !== playerId ? p : { ...p, chips: newChips, bet: newBet, allIn: isAllIn }
     );
-    setPlayers(updated);
-    setCurrentHighBet((prev) => Math.max(prev, newBet));
-    addContrib(playerId, actual);
+    const newContrib = { ...handContrib, [playerId]: (handContrib[playerId] ?? 0) + actual };
+    const newActed = markActed(playerId, actedThisStreet);
+    setCurrentHighBet(newHighBet);
+    setHandContrib(newContrib);
     setBetInput((prev) => ({ ...prev, [playerId]: "" }));
-    setActedThisStreet((prev) => markActed(playerId, prev));
-    afterAction(playerId, updated);
+    setActedThisStreet(newActed);
+    if (isStreetComplete(updated, newActed, newHighBet)) {
+      advanceStreetOrShowdown(updated, newContrib);
+    } else {
+      setPlayers(updated);
+      afterAction(playerId, updated);
+    }
   };
 
   const callBet = (playerId: number) => {
@@ -335,13 +342,8 @@ export default function Home() {
     const newContrib = { ...handContrib, [playerId]: (handContrib[playerId] ?? 0) + callAmount };
     setHandContrib(newContrib);
     const newActed = markActed(playerId, actedThisStreet);
-    const streetIdx = STREETS.indexOf(street);
     if (isStreetComplete(updated, newActed, currentHighBet)) {
-      if (streetIdx < STREETS.length - 1) {
-        advanceStreetWith(updated);
-      } else {
-        openShowdownWith(updated, newContrib);
-      }
+      advanceStreetOrShowdown(updated, newContrib);
     } else {
       setPlayers(updated);
       setActedThisStreet(newActed);
@@ -356,11 +358,18 @@ export default function Home() {
     const updated = players.map((p) =>
       p.id !== playerId ? p : { ...p, chips: 0, bet: newBet, allIn: true }
     );
-    setPlayers(updated);
-    setCurrentHighBet((prev) => Math.max(prev, newBet));
-    addContrib(playerId, player.chips);
-    setActedThisStreet((prev) => markActed(playerId, prev));
-    afterAction(playerId, updated);
+    const newContrib = { ...handContrib, [playerId]: (handContrib[playerId] ?? 0) + player.chips };
+    const newHighBet = Math.max(currentHighBet, newBet);
+    const newActed = markActed(playerId, actedThisStreet);
+    setCurrentHighBet(newHighBet);
+    setHandContrib(newContrib);
+    setActedThisStreet(newActed);
+    if (isStreetComplete(updated, newActed, newHighBet)) {
+      advanceStreetOrShowdown(updated, newContrib);
+    } else {
+      setPlayers(updated);
+      afterAction(playerId, updated);
+    }
   };
 
   const fold = (playerId: number) => {
@@ -371,13 +380,8 @@ export default function Home() {
       return;
     }
     const newActed = markActed(playerId, actedThisStreet);
-    const streetIdx = STREETS.indexOf(street);
     if (isStreetComplete(updated, newActed, currentHighBet)) {
-      if (streetIdx < STREETS.length - 1) {
-        advanceStreetWith(updated);
-      } else {
-        openShowdownWith(updated, handContrib);
-      }
+      advanceStreetOrShowdown(updated, handContrib);
     } else {
       setPlayers(updated);
       setActedThisStreet(newActed);
@@ -387,13 +391,8 @@ export default function Home() {
 
   const check = (playerId: number) => {
     const newActed = markActed(playerId, actedThisStreet);
-    const streetIdx = STREETS.indexOf(street);
     if (isStreetComplete(players, newActed, currentHighBet)) {
-      if (streetIdx < STREETS.length - 1) {
-        advanceStreetWith(players);
-      } else {
-        openShowdownWith(players, handContrib);
-      }
+      advanceStreetOrShowdown(players, handContrib);
     } else {
       setActedThisStreet(newActed);
       afterAction(playerId, players);
@@ -423,6 +422,17 @@ export default function Home() {
   };
 
   const nextStreet = () => advanceStreetWith(players);
+
+  // Advance to next street, or skip directly to showdown if no one can act
+  const advanceStreetOrShowdown = (list: Player[], contribs: Record<number, number>) => {
+    const streetIdx = STREETS.indexOf(street);
+    const canAct = list.filter((p) => !p.folded && !p.allIn).length > 0;
+    if (streetIdx >= STREETS.length - 1 || !canAct) {
+      openShowdownWith(list, contribs);
+    } else {
+      advanceStreetWith(list);
+    }
+  };
 
   // open showdown with an explicit player list and contrib map (for auto-trigger)
   const openShowdownWith = (list: Player[], contrib: Record<number, number>) => {
@@ -559,6 +569,13 @@ export default function Home() {
   };
 
   const nextHand = () => startNextHand(players);
+
+  const endSession = () => {
+    setShowEndConfirm(false);
+    setFrozenPots(null);
+    setPot(0);
+    setGameState("ended");
+  };
 
   const resetGame = () => {
     setGameState("setup");
@@ -769,7 +786,7 @@ export default function Home() {
               const n = players.length;
               const angle = (playerIndex / n) * Math.PI * 2;
               const rx = 38, ry = 39;
-              const x = 50 + rx * Math.sin(angle);
+              const x = 50 - rx * Math.sin(angle);
               const y = 50 + ry * Math.cos(angle);
 
               const pos = getPositionLabel(playerIndex);
@@ -932,20 +949,6 @@ export default function Home() {
             </div>
           )}
 
-          {/* Street navigation */}
-          {!frozenPots && (
-            <div className="flex gap-2">
-              <button onClick={nextStreet} disabled={streetIndex === STREETS.length - 1}
-                className="flex-1 text-sm bg-blue-800 hover:bg-blue-700 disabled:opacity-40 py-2 rounded-lg font-bold">
-                {streetIndex < STREETS.length - 1 ? `→ ${STREET_LABELS[STREETS[streetIndex + 1]]}` : "River (最終)"}
-              </button>
-              <button onClick={openShowdown}
-                className="flex-1 text-sm bg-orange-700 hover:bg-orange-600 py-2 rounded-lg font-bold">
-                Showdown
-              </button>
-            </div>
-          )}
-
           {/* Active player action panel */}
           {activeIsActing && (
             <div className="bg-green-900 border border-green-700 rounded-xl p-3 space-y-2">
@@ -1018,9 +1021,24 @@ export default function Home() {
             </div>
           )}
 
-          <button onClick={resetGame} className="w-full text-sm text-green-600 hover:text-green-400 py-2">
-            最初からやり直す
-          </button>
+          {/* Session end */}
+          {showEndConfirm ? (
+            <div className="bg-gray-900 border border-gray-600 rounded-xl p-4 space-y-3">
+              <p className="text-sm text-center text-gray-300">セッションを終了してチップ増減の結果を表示しますか？</p>
+              <div className="flex gap-3">
+                <button onClick={endSession} className="flex-1 bg-red-700 hover:bg-red-600 font-bold py-2 rounded-lg">
+                  終了する
+                </button>
+                <button onClick={() => setShowEndConfirm(false)} className="flex-1 bg-gray-700 hover:bg-gray-600 py-2 rounded-lg">
+                  キャンセル
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button onClick={() => setShowEndConfirm(true)} className="w-full text-sm text-gray-500 hover:text-gray-300 py-2">
+              セッションを終了
+            </button>
+          )}
         </div>
       )}
 
@@ -1093,11 +1111,62 @@ export default function Home() {
               className="flex-1 bg-yellow-500 hover:bg-yellow-400 text-black font-bold py-3 rounded-xl">
               次のハンドへ
             </button>
-            <button onClick={resetGame}
-              className="flex-1 bg-green-900 hover:bg-green-800 border border-green-700 py-3 rounded-xl">
-              最初からやり直す
-            </button>
           </div>
+
+          {/* Session end */}
+          {showEndConfirm ? (
+            <div className="bg-gray-900 border border-gray-600 rounded-xl p-4 space-y-3">
+              <p className="text-sm text-center text-gray-300">セッションを終了してチップ増減の結果を表示しますか？</p>
+              <div className="flex gap-3">
+                <button onClick={endSession} className="flex-1 bg-red-700 hover:bg-red-600 font-bold py-2 rounded-lg">
+                  終了する
+                </button>
+                <button onClick={() => setShowEndConfirm(false)} className="flex-1 bg-gray-700 hover:bg-gray-600 py-2 rounded-lg">
+                  キャンセル
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button onClick={() => setShowEndConfirm(true)} className="w-full text-sm text-gray-500 hover:text-gray-300 py-2">
+              セッションを終了
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* ===== ENDED ===== */}
+      {gameState === "ended" && (
+        <div className="max-w-md mx-auto px-4 space-y-4 pb-8">
+          <h2 className="text-xl font-bold text-center text-yellow-300 py-2">セッション終了</h2>
+
+          <div className="bg-green-900 border border-green-700 rounded-xl p-4 space-y-2">
+            <h3 className="font-semibold text-yellow-300 mb-3">最終結果</h3>
+            {[...players].sort((a, b) => b.chips - a.chips).map((p, rank) => {
+              const delta = p.chips - (sessionStartChips[p.id] ?? p.chips) - (totalRebuyChips[p.id] ?? 0);
+              const deltaStr = delta >= 0 ? `+${delta}` : `${delta}`;
+              const deltaColor = delta > 0 ? "text-green-400" : delta < 0 ? "text-red-400" : "text-gray-400";
+              const rebuyNote = (totalRebuyChips[p.id] ?? 0) > 0 ? ` (リバイ +${totalRebuyChips[p.id]})` : "";
+              return (
+                <div key={p.id} className={`flex items-center gap-3 rounded-lg px-3 py-2.5 ${
+                  rank === 0 ? "bg-yellow-900/40 border border-yellow-700/60" : "bg-green-800"
+                }`}>
+                  <span className="text-base font-bold text-gray-400 w-6 text-center">{rank + 1}</span>
+                  <span className="flex-1 font-bold">{p.name}</span>
+                  <div className="text-right">
+                    <div className="text-yellow-300 font-mono text-sm">{p.chips} chips</div>
+                    <div className={`text-sm font-bold font-mono ${deltaColor}`}>
+                      {deltaStr}{rebuyNote}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <button onClick={resetGame}
+            className="w-full bg-yellow-500 hover:bg-yellow-400 text-black font-bold py-3 rounded-xl text-lg">
+            新しいゲームを始める
+          </button>
         </div>
       )}
     </main>
