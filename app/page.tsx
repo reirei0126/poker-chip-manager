@@ -127,6 +127,7 @@ export default function Home() {
   const [actedThisStreet, setActedThisStreet] = useState<number[]>([]);
   const [showSettings, setShowSettings] = useState(false);
   const [showEndConfirm, setShowEndConfirm] = useState(false);
+  const [nameError, setNameError] = useState("");
   const [sessionStartChips, setSessionStartChips] = useState<Record<number, number>>({});
   const [totalRebuyChips, setTotalRebuyChips] = useState<Record<number, number>>({});
   const [loaded, setLoaded] = useState(false);
@@ -230,10 +231,14 @@ export default function Home() {
 
   // ── Setup ─────────────────────────────────────────────────────────
   const addPlayer = () => {
-    if (!newPlayerName.trim()) return;
+    const name = newPlayerName.trim();
+    if (!name) return;
+    if (players.length >= 9) { setNameError("プレイヤーは最大9人です"); return; }
+    if (players.some((p) => p.name === name)) { setNameError("同じ名前のプレイヤーが既にいます"); return; }
+    setNameError("");
     setPlayers((prev) => [
       ...prev,
-      { id: Date.now(), name: newPlayerName.trim(), chips: startingChips, bet: 0, folded: false, allIn: false },
+      { id: Date.now(), name, chips: startingChips, bet: 0, folded: false, allIn: false },
     ]);
     setNewPlayerName("");
   };
@@ -423,11 +428,11 @@ export default function Home() {
 
   const nextStreet = () => advanceStreetWith(players);
 
-  // Advance to next street, or skip directly to showdown if no one can act
+  // Advance to next street, or skip to showdown if ≤1 player can act
   const advanceStreetOrShowdown = (list: Player[], contribs: Record<number, number>) => {
     const streetIdx = STREETS.indexOf(street);
-    const canAct = list.filter((p) => !p.folded && !p.allIn).length > 0;
-    if (streetIdx >= STREETS.length - 1 || !canAct) {
+    const canAct = list.filter((p) => !p.folded && !p.allIn).length;
+    if (streetIdx >= STREETS.length - 1 || canAct <= 1) {
       openShowdownWith(list, contribs);
     } else {
       advanceStreetWith(list);
@@ -671,17 +676,19 @@ export default function Home() {
                 type="text"
                 placeholder="名前を入力"
                 value={newPlayerName}
-                onChange={(e) => setNewPlayerName(e.target.value)}
+                onChange={(e) => { setNewPlayerName(e.target.value); setNameError(""); }}
                 onKeyDown={(e) => e.key === "Enter" && addPlayer()}
                 className="flex-1 bg-green-700 rounded px-3 py-2"
               />
               <button
                 onClick={addPlayer}
-                className="bg-yellow-500 hover:bg-yellow-400 text-black font-bold px-4 rounded"
+                disabled={players.length >= 9}
+                className="bg-yellow-500 hover:bg-yellow-400 disabled:opacity-40 text-black font-bold px-4 rounded"
               >
                 追加
               </button>
             </div>
+            {nameError && <p className="text-red-400 text-xs">{nameError}</p>}
             <ul className="space-y-2">
               {players.map((p) => (
                 <li key={p.id} className="flex justify-between items-center bg-green-700 rounded px-3 py-2">
@@ -700,7 +707,7 @@ export default function Home() {
             disabled={players.length < 2}
             className="w-full bg-yellow-500 hover:bg-yellow-400 disabled:opacity-40 text-black font-bold py-3 rounded-xl text-lg"
           >
-            ゲーム開始 ({players.length}人)
+            ゲーム開始 ({players.length}/9人)
           </button>
         </div>
       )}
@@ -740,7 +747,7 @@ export default function Home() {
           </div>
 
           {/* ── Poker Table ── */}
-          <div className="relative w-full rounded-2xl overflow-hidden" style={{ height: 370, background: "#0a2a14" }}>
+          <div className="relative w-full rounded-2xl" style={{ height: 430, background: "#0a2a14" }}>
 
             {/* Felt oval */}
             <div className="absolute" style={{
@@ -785,7 +792,7 @@ export default function Home() {
             {players.map((p, playerIndex) => {
               const n = players.length;
               const angle = (playerIndex / n) * Math.PI * 2;
-              const rx = 38, ry = 39;
+              const rx = 34, ry = 36;
               const x = 50 - rx * Math.sin(angle);
               const y = 50 + ry * Math.cos(angle);
 
@@ -819,7 +826,7 @@ export default function Home() {
                   )}
 
                   <div style={{
-                    width: 74, background: cardBg, borderRadius: 10, padding: "6px 4px",
+                    width: 80, background: cardBg, borderRadius: 10, padding: "8px 6px",
                     border: borderStyle, boxShadow: shadow,
                     opacity: p.folded ? 0.5 : 1, textAlign: "center",
                   }}>
@@ -1072,7 +1079,6 @@ export default function Home() {
           {brokePlayers.length > 0 && (
             <div className="bg-gray-900 border border-gray-700 rounded-xl p-4 space-y-3">
               <h2 className="font-semibold text-lg text-red-300">リバイ</h2>
-              <p className="text-xs text-gray-400">上限: {rebuyAmount} chips / 1回</p>
               {brokePlayers.map((p) => {
                 const inputKey = `rebuy-${p.id}`;
                 return (
