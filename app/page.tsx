@@ -126,6 +126,8 @@ export default function Home() {
   const [rebuyAmount, setRebuyAmount] = useState(1000);
   const [actedThisStreet, setActedThisStreet] = useState<number[]>([]);
   const [showSettings, setShowSettings] = useState(false);
+  const [sessionStartChips, setSessionStartChips] = useState<Record<number, number>>({});
+  const [totalRebuyChips, setTotalRebuyChips] = useState<Record<number, number>>({});
   const [loaded, setLoaded] = useState(false);
 
   // ── localStorage load ─────────────────────────────────────────────
@@ -151,6 +153,8 @@ export default function Home() {
         setBbIdx(s.bbIdx ?? 0);
         setRebuyAmount(s.rebuyAmount ?? s.addonAmount ?? 1000);
         setActedThisStreet(s.actedThisStreet ?? []);
+        setSessionStartChips(s.sessionStartChips ?? {});
+        setTotalRebuyChips(s.totalRebuyChips ?? {});
       }
     } catch {}
     setLoaded(true);
@@ -166,12 +170,14 @@ export default function Home() {
           gameState, players, startingChips, sbAmount, bbAmount, pot, winner,
           street, dealerIndex, currentHighBet, activePlayerIndex, handContrib,
           frozenPots, sbIdx, bbIdx, rebuyAmount, actedThisStreet,
+          sessionStartChips, totalRebuyChips,
         })
       );
     } catch {}
   }, [loaded, gameState, players, startingChips, sbAmount, bbAmount, pot, winner,
     street, dealerIndex, currentHighBet, activePlayerIndex, handContrib,
-    frozenPots, sbIdx, bbIdx, rebuyAmount, actedThisStreet]);
+    frozenPots, sbIdx, bbIdx, rebuyAmount, actedThisStreet,
+    sessionStartChips, totalRebuyChips]);
 
   // ── Internal helpers ──────────────────────────────────────────────
   const nextActiveFrom = (fromIdx: number, list: Player[]): number => {
@@ -249,6 +255,8 @@ export default function Home() {
     setSbIdx(sb);
     setBbIdx(bb);
     setActedThisStreet([]);
+    setSessionStartChips(Object.fromEntries(players.map((p) => [p.id, p.chips])));
+    setTotalRebuyChips(Object.fromEntries(players.map((p) => [p.id, 0])));
     setGameState("betting");
   };
 
@@ -430,17 +438,13 @@ export default function Home() {
 
   const openShowdown = () => openShowdownWith(players, handContrib);
 
-  // Fix 7: per-pot split in showdown
-  const awardFrozenPot = (potIndex: number, winnerId: number) => {
-    const fp = frozenPots![potIndex];
-    setPlayers((prev) =>
-      prev.map((p) => (p.id === winnerId ? { ...p, chips: p.chips + fp.amount } : p))
+  // Showdown: just record winner/split selection (chips applied at finishShowdown)
+  const selectFrozenPotWinner = (potIndex: number, winnerId: number) => {
+    setFrozenPots((prev) =>
+      prev!.map((fp, i) =>
+        i === potIndex ? { ...fp, winnerId, splitMode: false, splitSelectedIds: [] } : fp
+      )
     );
-    const updated = frozenPots!.map((p, i) =>
-      i === potIndex ? { ...p, winnerId, splitMode: false } : p
-    );
-    setFrozenPots(updated);
-    if (updated.every((p) => p.winnerId !== null)) setWinner(winnerId);
   };
 
   const toggleFrozenPotSplit = (potIndex: number) =>
@@ -465,27 +469,39 @@ export default function Home() {
     const fp = frozenPots![potIndex];
     const ids = fp.splitSelectedIds;
     if (ids.length < 2) return;
-    const share = Math.floor(fp.amount / ids.length);
-    const remainder = fp.amount - share * ids.length;
-    setPlayers((prev) =>
-      prev.map((p) => {
-        if (!ids.includes(p.id)) return p;
-        return { ...p, chips: p.chips + share + (ids[0] === p.id ? remainder : 0) };
-      })
+    setFrozenPots((prev) =>
+      prev!.map((p, i) =>
+        i === potIndex ? { ...p, winnerId: ids[0], splitMode: false } : p
+      )
     );
-    const updated = frozenPots!.map((p, i) =>
-      i === potIndex ? { ...p, winnerId: ids[0], splitMode: false } : p
-    );
-    setFrozenPots(updated);
-    if (updated.every((p) => p.winnerId !== null)) setWinner(ids[0]);
   };
 
   const finishShowdown = () => {
+    // Apply all pot awards at once
+    let updatedPlayers = [...players];
+    for (const fp of frozenPots ?? []) {
+      if (fp.winnerId === null) continue;
+      if (fp.splitSelectedIds.length > 1) {
+        const ids = fp.splitSelectedIds;
+        const share = Math.floor(fp.amount / ids.length);
+        const remainder = fp.amount - share * ids.length;
+        updatedPlayers = updatedPlayers.map((p) => {
+          if (!ids.includes(p.id)) return p;
+          return { ...p, chips: p.chips + share + (ids[0] === p.id ? remainder : 0) };
+        });
+      } else {
+        updatedPlayers = updatedPlayers.map((p) =>
+          p.id === fp.winnerId ? { ...p, chips: p.chips + fp.amount } : p
+        );
+      }
+    }
+    setFrozenPots(null);
     setPot(0);
-    if (players.some((p) => p.chips === 0)) {
+    if (updatedPlayers.some((p) => p.chips === 0)) {
+      setPlayers(updatedPlayers);
       setGameState("result");
     } else {
-      nextHand();
+      startNextHand(updatedPlayers);
     }
   };
 
@@ -511,10 +527,12 @@ export default function Home() {
     setGameState("result");
   };
 
-  const doAddon = (playerId: number) =>
+  const doAddon = (playerId: number) => {
     setPlayers((prev) =>
       prev.map((p) => (p.id === playerId ? { ...p, chips: p.chips + rebuyAmount } : p))
     );
+    setTotalRebuyChips((prev) => ({ ...prev, [playerId]: (prev[playerId] ?? 0) + rebuyAmount }));
+  };
 
   // ── Next hand / Reset ─────────────────────────────────────────────
   const startNextHand = (basePlayers: Player[]) => {
@@ -554,6 +572,8 @@ export default function Home() {
     setFrozenPots(null);
     setSbIdx(0);
     setBbIdx(0);
+    setSessionStartChips({});
+    setTotalRebuyChips({});
     localStorage.removeItem(STORAGE_KEY);
   };
 
@@ -745,82 +765,105 @@ export default function Home() {
             {frozenPots && (
               <div className="mt-3 space-y-2">
                 <div className="text-sm font-bold text-orange-300">Showdown — ポットを付与</div>
-                {frozenPots.map((fp, i) => (
-                  <div key={i} className="bg-green-700 rounded p-2 space-y-1">
-                    <div className="flex justify-between text-xs">
-                      <span>Pot {i + 1}: <span className="text-yellow-300 font-bold">{fp.amount}</span></span>
-                      {fp.winnerId !== null && (
-                        <span className="text-green-300">
-                          → {fp.splitSelectedIds.length > 1
-                            ? "Split"
-                            : players.find((p) => p.id === fp.winnerId)?.name}
-                        </span>
-                      )}
-                    </div>
-                    {fp.winnerId === null && !fp.splitMode && (
-                      <div className="flex flex-wrap gap-1">
-                        {fp.eligibleIds.map((id) => (
-                          <button
-                            key={id}
-                            onClick={() => awardFrozenPot(i, id)}
-                            className="text-xs bg-yellow-600 hover:bg-yellow-500 text-black font-bold px-2 py-1 rounded"
-                          >
-                            {players.find((p) => p.id === id)?.name}
-                          </button>
-                        ))}
-                        {fp.eligibleIds.length >= 2 && (
-                          <button
-                            onClick={() => toggleFrozenPotSplit(i)}
-                            className="text-xs bg-purple-600 hover:bg-purple-500 px-2 py-1 rounded font-bold"
-                          >
-                            Split
-                          </button>
+                {frozenPots.map((fp, i) => {
+                  const isSplit = fp.splitSelectedIds.length > 1 && fp.winnerId !== null;
+                  return (
+                    <div key={i} className="bg-green-700 rounded-lg p-3 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs text-green-300">Pot {i + 1}</span>
+                        <span className="text-yellow-300 font-bold text-lg">{fp.amount}</span>
+                        {fp.winnerId !== null && (
+                          <span className="text-xs text-green-300">
+                            {isSplit
+                              ? `${fp.splitSelectedIds.map((id) => players.find((p) => p.id === id)?.name).join(" / ")} で分割`
+                              : `→ ${players.find((p) => p.id === fp.winnerId)?.name}`}
+                          </span>
                         )}
                       </div>
-                    )}
-                    {fp.winnerId === null && fp.splitMode && (
-                      <div className="space-y-1">
-                        <div className="flex flex-wrap gap-1">
-                          {fp.eligibleIds.map((id) => (
+
+                      {/* Winner selection: always visible, allows re-selection */}
+                      {!fp.splitMode && (
+                        <div className="flex flex-wrap gap-1.5">
+                          {fp.eligibleIds.map((id) => {
+                            const isSelected = fp.winnerId === id && !isSplit;
+                            return (
+                              <button
+                                key={id}
+                                onClick={() => selectFrozenPotWinner(i, id)}
+                                className={`text-sm px-3 py-1.5 rounded font-bold transition-all ${
+                                  isSelected
+                                    ? "bg-yellow-400 text-black ring-2 ring-yellow-200 shadow-lg scale-105"
+                                    : "bg-green-600 hover:bg-green-500 text-white"
+                                }`}
+                              >
+                                {isSelected ? "✓ " : ""}{players.find((p) => p.id === id)?.name}
+                              </button>
+                            );
+                          })}
+                          {fp.eligibleIds.length >= 2 && (
                             <button
-                              key={id}
-                              onClick={() => toggleFrozenPotSplitPlayer(i, id)}
-                              className={`text-xs px-2 py-1 rounded font-bold ${
-                                fp.splitSelectedIds.includes(id)
-                                  ? "bg-purple-500"
-                                  : "bg-green-600 hover:bg-green-500"
+                              onClick={() => toggleFrozenPotSplit(i)}
+                              className={`text-sm px-3 py-1.5 rounded font-bold transition-all ${
+                                isSplit
+                                  ? "bg-purple-400 text-black ring-2 ring-purple-200 shadow-lg scale-105"
+                                  : "bg-purple-700 hover:bg-purple-600 text-white"
                               }`}
                             >
-                              {players.find((p) => p.id === id)?.name}
-                            </button>
-                          ))}
-                        </div>
-                        <div className="flex gap-1">
-                          {fp.splitSelectedIds.length >= 2 && (
-                            <button
-                              onClick={() => confirmFrozenPotSplit(i)}
-                              className="text-xs bg-purple-500 hover:bg-purple-400 px-3 py-1 rounded font-bold"
-                            >
-                              {fp.splitSelectedIds.length}人で分割
+                              Split
                             </button>
                           )}
-                          <button
-                            onClick={() => toggleFrozenPotSplit(i)}
-                            className="text-xs bg-gray-600 hover:bg-gray-500 px-2 py-1 rounded"
-                          >
-                            キャンセル
-                          </button>
                         </div>
-                      </div>
-                    )}
-                  </div>
-                ))}
+                      )}
+
+                      {/* Split mode: multi-select */}
+                      {fp.splitMode && (
+                        <div className="space-y-1.5">
+                          <div className="text-xs text-purple-300">分割するプレイヤーを選択</div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {fp.eligibleIds.map((id) => {
+                              const isSel = fp.splitSelectedIds.includes(id);
+                              return (
+                                <button
+                                  key={id}
+                                  onClick={() => toggleFrozenPotSplitPlayer(i, id)}
+                                  className={`text-sm px-3 py-1.5 rounded font-bold transition-all ${
+                                    isSel
+                                      ? "bg-purple-400 text-black ring-2 ring-purple-200 shadow-lg scale-105"
+                                      : "bg-green-600 hover:bg-green-500 text-white"
+                                  }`}
+                                >
+                                  {isSel ? "✓ " : ""}{players.find((p) => p.id === id)?.name}
+                                </button>
+                              );
+                            })}
+                          </div>
+                          <div className="flex gap-1.5">
+                            {fp.splitSelectedIds.length >= 2 && (
+                              <button
+                                onClick={() => confirmFrozenPotSplit(i)}
+                                className="text-xs bg-purple-500 hover:bg-purple-400 px-3 py-1 rounded font-bold"
+                              >
+                                {fp.splitSelectedIds.length}人で分割
+                              </button>
+                            )}
+                            <button
+                              onClick={() => toggleFrozenPotSplit(i)}
+                              className="text-xs bg-gray-600 hover:bg-gray-500 px-2 py-1 rounded"
+                            >
+                              キャンセル
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
                 {frozenPots.every((fp) => fp.winnerId !== null) && (
                   <button
                     onClick={finishShowdown}
-                    className="w-full bg-yellow-500 hover:bg-yellow-400 text-black font-bold py-2 rounded"
+                    className="w-full bg-yellow-500 hover:bg-yellow-400 text-black font-bold py-3 rounded-lg text-base"
                   >
-                    結果を見る
+                    次のハンドへ
                   </button>
                 )}
               </div>
@@ -854,6 +897,9 @@ export default function Home() {
               const position = getPositionLabel(playerIndex);
               const callAmount = Math.min(currentHighBet - p.bet, p.chips);
               const isActive = playerIndex === activePlayerIndex && !p.folded && !p.allIn && !frozenPots;
+              const chipDelta = p.chips - (sessionStartChips[p.id] ?? p.chips) - (totalRebuyChips[p.id] ?? 0);
+              const deltaStr = chipDelta > 0 ? `+${chipDelta}` : `${chipDelta}`;
+              const deltaColor = chipDelta > 0 ? "text-green-400" : chipDelta < 0 ? "text-red-400" : "text-gray-400";
 
               // Fix 6: BB option indicator
               const isBbOption = street === "preflop" && playerIndex === bbIdx && isActive;
@@ -892,7 +938,13 @@ export default function Home() {
                         </span>
                       )}
                     </div>
-                    <span className="text-yellow-300 font-mono">{p.chips} chips</span>
+                    <div className="text-right">
+                      <span className="text-yellow-300 font-mono">{p.chips}</span>
+                      {sessionStartChips[p.id] !== undefined && chipDelta !== 0 && (
+                        <span className={`text-xs font-mono ml-1 ${deltaColor}`}>({deltaStr})</span>
+                      )}
+                      <span className="text-yellow-300 font-mono text-sm"> chips</span>
+                    </div>
                   </div>
 
                   {p.bet > 0 && <div className="text-sm text-blue-300">ベット中: {p.bet}</div>}
@@ -959,6 +1011,32 @@ export default function Home() {
       {/* ===== RESULT ===== */}
       {gameState === "result" && (
         <div className="max-w-md mx-auto space-y-4">
+
+          {/* Chip standings */}
+          <div className="bg-green-800 rounded-xl p-4 space-y-2">
+            <h2 className="font-semibold text-lg text-yellow-300">チップ状況</h2>
+            {[...players]
+              .sort((a, b) => b.chips - a.chips)
+              .map((p) => {
+                const delta = p.chips - (sessionStartChips[p.id] ?? p.chips) - (totalRebuyChips[p.id] ?? 0);
+                const deltaStr = delta > 0 ? `+${delta}` : `${delta}`;
+                const deltaColor = delta > 0 ? "text-green-400" : delta < 0 ? "text-red-400" : "text-gray-400";
+                const rebuyNote = (totalRebuyChips[p.id] ?? 0) > 0 ? ` (リバイ+${totalRebuyChips[p.id]})` : "";
+                return (
+                  <div key={p.id} className="flex justify-between items-center bg-green-700 rounded px-3 py-2">
+                    <span className={p.chips === 0 ? "text-gray-400" : ""}>{p.name}</span>
+                    <div className="text-right">
+                      <span className="text-yellow-300 font-mono">{p.chips} chips</span>
+                      {sessionStartChips[p.id] !== undefined && (
+                        <span className={`text-sm font-mono ml-2 ${deltaColor}`}>
+                          ({deltaStr}{rebuyNote})
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+          </div>
 
           {/* Rebuy for broke players */}
           {brokePlayers.length > 0 && (
