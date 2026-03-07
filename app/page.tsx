@@ -447,7 +447,12 @@ export default function Home() {
     setPlayers(list.map((p) => ({ ...p, bet: 0 })));
     setActedThisStreet([]);
     setFrozenPots(
-      pots.map((p) => ({ ...p, winnerId: null, splitMode: false, splitSelectedIds: [] }))
+      pots.map((p) => ({
+        ...p,
+        winnerId: p.eligibleIds.length === 1 ? p.eligibleIds[0] : null,
+        splitMode: false,
+        splitSelectedIds: [],
+      }))
     );
   };
 
