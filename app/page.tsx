@@ -527,11 +527,13 @@ export default function Home() {
     setGameState("result");
   };
 
-  const doAddon = (playerId: number) => {
+  const doAddon = (playerId: number, amount?: number) => {
+    const amt = Math.min(amount ?? rebuyAmount, rebuyAmount);
+    if (amt <= 0) return;
     setPlayers((prev) =>
-      prev.map((p) => (p.id === playerId ? { ...p, chips: p.chips + rebuyAmount } : p))
+      prev.map((p) => (p.id === playerId ? { ...p, chips: p.chips + amt } : p))
     );
-    setTotalRebuyChips((prev) => ({ ...prev, [playerId]: (prev[playerId] ?? 0) + rebuyAmount }));
+    setTotalRebuyChips((prev) => ({ ...prev, [playerId]: (prev[playerId] ?? 0) + amt }));
   };
 
   // ── Next hand / Reset ─────────────────────────────────────────────
@@ -584,7 +586,11 @@ export default function Home() {
   const liveSidePots = hasAllIn && !frozenPots ? calcSidePots(players, handContrib) : [];
   const brokePlayers = players.filter((p) => p.chips === 0);
 
-  // quick bet options depend on street and whether a bet is already in
+  const activePlayer = players[activePlayerIndex];
+  const activeIsActing = !!activePlayer && !activePlayer.folded && !activePlayer.allIn && !frozenPots;
+  const isBbOptionActive = activeIsActing && street === "preflop" && activePlayerIndex === bbIdx;
+  const activePosLabel = getPositionLabel(activePlayerIndex);
+
   const quickBets: { label: string; val: number }[] = (() => {
     const p3 = Math.floor(totalCurrentPot / 3);
     const p2 = Math.floor(totalCurrentPot / 2);
@@ -592,13 +598,11 @@ export default function Home() {
     const b25 = Math.floor(currentHighBet * 2.5);
     const b4 = currentHighBet * 4;
     if (street === "preflop" && currentHighBet <= bbAmount) {
-      // first bet preflop: 2.5BB / 3BB
       return [
         { label: `2.5BB (${Math.floor(bbAmount * 2.5)})`, val: Math.floor(bbAmount * 2.5) },
         { label: `3BB (${bbAmount * 3})`, val: bbAmount * 3 },
       ];
     } else if (currentHighBet === 0) {
-      // first bet post-flop: pot fractions
       return [
         { label: `1/3P (${p3})`, val: p3 },
         { label: `1/2P (${p2})`, val: p2 },
@@ -606,7 +610,6 @@ export default function Home() {
         { label: `1P (${totalCurrentPot})`, val: totalCurrentPot },
       ];
     } else {
-      // bet already in: raise sizing
       return [
         { label: `×2.5 (${b25})`, val: b25 },
         { label: `×4 (${b4})`, val: b4 },
@@ -616,14 +619,14 @@ export default function Home() {
 
   // ── Render ────────────────────────────────────────────────────────
   return (
-    <main className="min-h-screen bg-green-900 text-white p-4">
-      <h1 className="text-3xl font-bold text-center text-yellow-400 mb-6">
+    <main className="min-h-screen text-white" style={{ background: "#0d3320" }}>
+      <h1 className="text-2xl font-bold text-center text-yellow-400 py-3 tracking-wide">
         Poker Chip Manager
       </h1>
 
       {/* ===== SETUP ===== */}
       {gameState === "setup" && (
-        <div className="max-w-md mx-auto space-y-4">
+        <div className="max-w-md mx-auto px-4 space-y-4 pb-8">
           <div className="bg-green-800 rounded-xl p-4 space-y-3">
             <h2 className="text-xl font-semibold">ゲーム設定</h2>
             {[
@@ -687,13 +690,13 @@ export default function Home() {
 
       {/* ===== BETTING ===== */}
       {gameState === "betting" && (
-        <div className="max-w-lg mx-auto space-y-4">
+        <div className="max-w-lg mx-auto px-2 space-y-3 pb-6">
 
           {/* Settings panel */}
-          <div className="bg-green-800 rounded-xl overflow-hidden">
+          <div className="bg-green-900 rounded-xl overflow-hidden border border-green-700">
             <button
               onClick={() => setShowSettings((v) => !v)}
-              className="w-full flex justify-between items-center px-4 py-2 text-sm text-green-300 hover:text-white"
+              className="w-full flex justify-between items-center px-4 py-2 text-sm text-green-400 hover:text-white"
             >
               <span>⚙ ゲーム設定</span>
               <span>{showSettings ? "▲" : "▼"}</span>
@@ -719,290 +722,303 @@ export default function Home() {
             )}
           </div>
 
-          {/* Street + Pot */}
-          <div className="bg-green-800 rounded-xl p-4">
-            <div className="flex gap-1 mb-3">
-              {STREETS.map((s, i) => (
-                <div
-                  key={s}
-                  className={`flex-1 text-center text-xs py-1 rounded font-bold ${
-                    i === streetIndex
-                      ? "bg-yellow-500 text-black"
-                      : i < streetIndex
-                      ? "bg-green-600 text-green-300"
-                      : "bg-green-700 text-green-500"
-                  }`}
-                >
-                  {STREET_LABELS[s]}
-                </div>
-              ))}
-            </div>
+          {/* ── Poker Table ── */}
+          <div className="relative w-full rounded-2xl overflow-hidden" style={{ height: 370, background: "#0a2a14" }}>
 
-            <div className="text-center">
-              <div className="text-sm text-green-300">ポット</div>
-              <div className="text-4xl font-bold text-yellow-400">{totalCurrentPot}</div>
-              {currentHighBet > 0 && (
-                <div className="text-sm text-blue-300 mt-1">現在のベット: {currentHighBet}</div>
-              )}
-            </div>
-
-            {/* Live side pot preview */}
-            {liveSidePots.length > 0 && (
-              <div className="mt-3 space-y-1">
-                <div className="text-xs text-orange-300 font-bold">サイドポット試算</div>
-                {liveSidePots.map((sp, i) => (
-                  <div key={i} className="text-xs bg-green-700 rounded px-2 py-1 flex justify-between">
-                    <span className="text-yellow-300">Pot {i + 1}: {sp.amount}</span>
-                    <span className="text-green-300">
-                      {sp.eligibleIds.map((id) => players.find((p) => p.id === id)?.name).join(", ")}
-                    </span>
+            {/* Felt oval */}
+            <div className="absolute" style={{
+              width: "60%", height: "58%",
+              left: "50%", top: "50%",
+              transform: "translate(-50%, -50%)",
+              background: "radial-gradient(ellipse at 40% 35%, #16a34a 0%, #166534 55%, #14532d 100%)",
+              borderRadius: "50%",
+              border: "7px solid #78350f",
+              boxShadow: "inset 0 0 30px rgba(0,0,0,0.5), 0 6px 28px rgba(0,0,0,0.7)",
+              zIndex: 1,
+            }}>
+              {/* Street progress inside table */}
+              <div className="absolute flex gap-0.5" style={{ top: 8, left: 8, right: 8 }}>
+                {STREETS.map((s, i) => (
+                  <div key={s} className={`flex-1 text-center font-bold rounded ${
+                    i === streetIndex ? "bg-yellow-500 text-black" :
+                    i < streetIndex ? "bg-green-700 text-green-400" :
+                    "bg-green-950 text-green-700"
+                  }`} style={{ fontSize: 8, padding: "2px 0" }}>
+                    {s === "preflop" ? "Pre" : s.charAt(0).toUpperCase() + s.slice(1)}
                   </div>
                 ))}
               </div>
-            )}
 
-            {/* Showdown frozen pots */}
-            {frozenPots && (
-              <div className="mt-3 space-y-2">
-                <div className="text-sm font-bold text-orange-300">Showdown — ポットを付与</div>
-                {frozenPots.map((fp, i) => {
-                  const isSplit = fp.splitSelectedIds.length > 1 && fp.winnerId !== null;
-                  return (
-                    <div key={i} className="bg-green-700 rounded-lg p-3 space-y-2">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs text-green-300">Pot {i + 1}</span>
-                        <span className="text-yellow-300 font-bold text-lg">{fp.amount}</span>
-                        {fp.winnerId !== null && (
-                          <span className="text-xs text-green-300">
-                            {isSplit
-                              ? `${fp.splitSelectedIds.map((id) => players.find((p) => p.id === id)?.name).join(" / ")} で分割`
-                              : `→ ${players.find((p) => p.id === fp.winnerId)?.name}`}
-                          </span>
-                        )}
-                      </div>
-
-                      {/* Winner selection: always visible, allows re-selection */}
-                      {!fp.splitMode && (
-                        <div className="flex flex-wrap gap-1.5">
-                          {fp.eligibleIds.map((id) => {
-                            const isSelected = fp.winnerId === id && !isSplit;
-                            return (
-                              <button
-                                key={id}
-                                onClick={() => selectFrozenPotWinner(i, id)}
-                                className={`text-sm px-3 py-1.5 rounded font-bold transition-all ${
-                                  isSelected
-                                    ? "bg-yellow-400 text-black ring-2 ring-yellow-200 shadow-lg scale-105"
-                                    : "bg-green-600 hover:bg-green-500 text-white"
-                                }`}
-                              >
-                                {isSelected ? "✓ " : ""}{players.find((p) => p.id === id)?.name}
-                              </button>
-                            );
-                          })}
-                          {fp.eligibleIds.length >= 2 && (
-                            <button
-                              onClick={() => toggleFrozenPotSplit(i)}
-                              className={`text-sm px-3 py-1.5 rounded font-bold transition-all ${
-                                isSplit
-                                  ? "bg-purple-400 text-black ring-2 ring-purple-200 shadow-lg scale-105"
-                                  : "bg-purple-700 hover:bg-purple-600 text-white"
-                              }`}
-                            >
-                              Split
-                            </button>
-                          )}
-                        </div>
-                      )}
-
-                      {/* Split mode: multi-select */}
-                      {fp.splitMode && (
-                        <div className="space-y-1.5">
-                          <div className="text-xs text-purple-300">分割するプレイヤーを選択</div>
-                          <div className="flex flex-wrap gap-1.5">
-                            {fp.eligibleIds.map((id) => {
-                              const isSel = fp.splitSelectedIds.includes(id);
-                              return (
-                                <button
-                                  key={id}
-                                  onClick={() => toggleFrozenPotSplitPlayer(i, id)}
-                                  className={`text-sm px-3 py-1.5 rounded font-bold transition-all ${
-                                    isSel
-                                      ? "bg-purple-400 text-black ring-2 ring-purple-200 shadow-lg scale-105"
-                                      : "bg-green-600 hover:bg-green-500 text-white"
-                                  }`}
-                                >
-                                  {isSel ? "✓ " : ""}{players.find((p) => p.id === id)?.name}
-                                </button>
-                              );
-                            })}
-                          </div>
-                          <div className="flex gap-1.5">
-                            {fp.splitSelectedIds.length >= 2 && (
-                              <button
-                                onClick={() => confirmFrozenPotSplit(i)}
-                                className="text-xs bg-purple-500 hover:bg-purple-400 px-3 py-1 rounded font-bold"
-                              >
-                                {fp.splitSelectedIds.length}人で分割
-                              </button>
-                            )}
-                            <button
-                              onClick={() => toggleFrozenPotSplit(i)}
-                              className="text-xs bg-gray-600 hover:bg-gray-500 px-2 py-1 rounded"
-                            >
-                              キャンセル
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-                {frozenPots.every((fp) => fp.winnerId !== null) && (
-                  <button
-                    onClick={finishShowdown}
-                    className="w-full bg-yellow-500 hover:bg-yellow-400 text-black font-bold py-3 rounded-lg text-base"
-                  >
-                    次のハンドへ
-                  </button>
+              {/* Pot display */}
+              <div className="absolute inset-0 flex flex-col items-center justify-center">
+                <div className="text-green-300 font-semibold tracking-widest" style={{ fontSize: 9 }}>POT</div>
+                <div className="text-yellow-400 font-bold leading-none" style={{ fontSize: 28 }}>{totalCurrentPot}</div>
+                {currentHighBet > 0 && (
+                  <div className="text-blue-300 mt-0.5" style={{ fontSize: 9 }}>Bet: {currentHighBet}</div>
                 )}
+                {liveSidePots.length > 1 && liveSidePots.map((sp, i) => (
+                  <div key={i} className="text-orange-300" style={{ fontSize: 8 }}>
+                    Pot{i + 1}: {sp.amount}
+                  </div>
+                ))}
               </div>
-            )}
+            </div>
 
-            {/* Street navigation */}
-            {!frozenPots && (
-              <div className="flex gap-2 mt-3">
-                <button
-                  onClick={nextStreet}
-                  disabled={streetIndex === STREETS.length - 1}
-                  className="flex-1 text-sm bg-blue-700 hover:bg-blue-600 disabled:opacity-40 py-2 rounded font-bold"
-                >
-                  {streetIndex < STREETS.length - 1
-                    ? `→ ${STREET_LABELS[STREETS[streetIndex + 1]]}`
-                    : "River (最終)"}
-                </button>
-                <button
-                  onClick={openShowdown}
-                  className="flex-1 text-sm bg-orange-600 hover:bg-orange-500 py-2 rounded font-bold"
-                >
-                  Showdown
-                </button>
-              </div>
-            )}
-          </div>
-
-          {/* Player cards */}
-          <div className="space-y-3">
+            {/* Player seats around the table */}
             {players.map((p, playerIndex) => {
-              const position = getPositionLabel(playerIndex);
-              const callAmount = Math.min(currentHighBet - p.bet, p.chips);
+              const n = players.length;
+              const angle = (playerIndex / n) * Math.PI * 2;
+              const rx = 38, ry = 39;
+              const x = 50 + rx * Math.sin(angle);
+              const y = 50 + ry * Math.cos(angle);
+
+              const pos = getPositionLabel(playerIndex);
+              const isDealer = playerIndex === dealerIndex && p.chips > 0;
               const isActive = playerIndex === activePlayerIndex && !p.folded && !p.allIn && !frozenPots;
               const chipDelta = p.chips - (sessionStartChips[p.id] ?? p.chips) - (totalRebuyChips[p.id] ?? 0);
               const deltaStr = chipDelta > 0 ? `+${chipDelta}` : `${chipDelta}`;
-              const deltaColor = chipDelta > 0 ? "text-green-400" : chipDelta < 0 ? "text-red-400" : "text-gray-400";
+              const deltaColor = chipDelta > 0 ? "#4ade80" : chipDelta < 0 ? "#f87171" : "#9ca3af";
 
-              // Fix 6: BB option indicator
-              const isBbOption = street === "preflop" && playerIndex === bbIdx && isActive;
+              let cardBg = "#1f4a2a";
+              let borderStyle = "1px solid #2d6a3a";
+              let shadow = "";
+              if (p.folded) { cardBg = "#374151"; borderStyle = "1px solid #4b5563"; }
+              else if (p.allIn) { borderStyle = "2px solid #f97316"; }
+              else if (isActive) { cardBg = "#166534"; borderStyle = "2px solid #facc15"; shadow = "0 0 14px rgba(250,204,21,0.6)"; }
 
               return (
-                <div
-                  key={p.id}
-                  className={`rounded-xl p-4 space-y-2 transition-all ${
-                    p.folded
-                      ? "bg-gray-700 opacity-50"
-                      : p.allIn
-                      ? "bg-green-900 border border-orange-500"
-                      : isActive
-                      ? "bg-green-800 ring-2 ring-yellow-400"
-                      : "bg-green-800"
-                  }`}
-                >
-                  <div className="flex justify-between items-center">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      {isActive && !isBbOption && (
-                        <span className="text-yellow-400 text-xs font-bold animate-pulse">YOUR TURN</span>
-                      )}
-                      {isBbOption && (
-                        <span className="text-amber-300 text-xs font-bold animate-pulse">BB OPTION</span>
-                      )}
-                      <span className="font-bold text-lg">
-                        {p.folded ? "FOLD " : p.allIn ? "ALL-IN " : ""}
-                        {p.name}
-                      </span>
-                      {position && (
-                        <span className={`text-xs px-2 py-0.5 rounded font-bold ${
-                          position.includes("BTN") ? "bg-yellow-600" :
-                          position === "SB" ? "bg-orange-600" : "bg-red-700"
-                        }`}>
-                          {position}
-                        </span>
-                      )}
-                    </div>
-                    <div className="text-right">
-                      <span className="text-yellow-300 font-mono">{p.chips}</span>
-                      {sessionStartChips[p.id] !== undefined && chipDelta !== 0 && (
-                        <span className={`text-xs font-mono ml-1 ${deltaColor}`}>({deltaStr})</span>
-                      )}
-                      <span className="text-yellow-300 font-mono text-sm"> chips</span>
-                    </div>
-                  </div>
-
-                  {p.bet > 0 && <div className="text-sm text-blue-300">ベット中: {p.bet}</div>}
-
+                <div key={p.id} style={{
+                  position: "absolute",
+                  left: `${x}%`, top: `${y}%`,
+                  transform: "translate(-50%, -50%)",
+                  zIndex: isActive ? 10 : 3,
+                  display: "flex", flexDirection: "column", alignItems: "center",
+                }}>
+                  {/* Status label above seat */}
                   {isActive && (
-                    <>
-                      <div className="flex gap-1 flex-wrap items-center">
-                        <span className="text-xs text-green-400">クイック:</span>
-                        {quickBets.map(({ label, val }) => (
-                          <button
-                            key={label}
-                            onClick={() => quickBet(p.id, val)}
-                            className="text-xs bg-green-700 hover:bg-green-600 px-2 py-0.5 rounded"
-                          >
-                            {label}
-                          </button>
-                        ))}
-                      </div>
-
-                      <div className="flex gap-2 flex-wrap">
-                        <input
-                          type="number"
-                          placeholder="合計ベット額"
-                          value={betInput[p.id] || ""}
-                          onChange={(e) =>
-                            setBetInput((prev) => ({ ...prev, [p.id]: e.target.value }))
-                          }
-                          onKeyDown={(e) => e.key === "Enter" && placeBet(p.id)}
-                          className="flex-1 min-w-0 bg-green-700 rounded px-3 py-1 text-right"
-                        />
-                        <button onClick={() => placeBet(p.id)} className="bg-blue-500 hover:bg-blue-400 px-3 py-1 rounded font-bold text-sm">
-                          {(street === "preflop" ? currentHighBet > bbAmount : currentHighBet > 0) ? "RAISE" : "BET"}
-                        </button>
-                        {callAmount > 0 ? (
-                          <button onClick={() => callBet(p.id)} className="bg-green-500 hover:bg-green-400 px-3 py-1 rounded font-bold text-sm">
-                            CALL {callAmount}
-                          </button>
-                        ) : (
-                          <button onClick={() => check(p.id)} className="bg-green-700 hover:bg-green-600 px-3 py-1 rounded font-bold text-sm">
-                            CHECK
-                          </button>
-                        )}
-                        <button onClick={() => doAllIn(p.id)} className="bg-orange-500 hover:bg-orange-400 px-3 py-1 rounded font-bold text-sm">
-                          ALL-IN
-                        </button>
-                        <button onClick={() => fold(p.id)} className="bg-red-600 hover:bg-red-500 px-3 py-1 rounded font-bold text-sm">
-                          FOLD
-                        </button>
-                      </div>
-                    </>
+                    <div className="animate-pulse font-bold" style={{ fontSize: 8, color: "#facc15", marginBottom: 2, whiteSpace: "nowrap" }}>
+                      {isBbOptionActive ? "BB OPTION" : "YOUR TURN"}
+                    </div>
                   )}
 
+                  <div style={{
+                    width: 74, background: cardBg, borderRadius: 10, padding: "6px 4px",
+                    border: borderStyle, boxShadow: shadow,
+                    opacity: p.folded ? 0.5 : 1, textAlign: "center",
+                  }}>
+                    {/* Name */}
+                    <div style={{ fontSize: 11, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: p.folded ? "#9ca3af" : "white" }}>
+                      {p.name}
+                    </div>
+
+                    {/* Badges row */}
+                    <div style={{ display: "flex", gap: 2, justifyContent: "center", flexWrap: "wrap", marginTop: 2 }}>
+                      {isDealer && (
+                        <span style={{ fontSize: 8, background: "#eab308", color: "black", borderRadius: "50%", padding: "0 4px", fontWeight: 700 }}>D</span>
+                      )}
+                      {pos === "SB" || pos === "BTN/SB" ? (
+                        <span style={{ fontSize: 8, background: "#ea580c", borderRadius: 3, padding: "0 3px", fontWeight: 700 }}>SB</span>
+                      ) : null}
+                      {pos === "BB" ? (
+                        <span style={{ fontSize: 8, background: "#b91c1c", borderRadius: 3, padding: "0 3px", fontWeight: 700 }}>BB</span>
+                      ) : null}
+                    </div>
+
+                    {/* Status */}
+                    {p.folded && <div style={{ fontSize: 9, color: "#9ca3af" }}>FOLD</div>}
+                    {p.allIn && <div style={{ fontSize: 9, color: "#fb923c", fontWeight: 700 }}>ALL-IN</div>}
+
+                    {/* Chips + delta */}
+                    <div style={{ fontSize: 11, color: "#fde047", fontFamily: "monospace", marginTop: 2 }}>{p.chips}</div>
+                    {sessionStartChips[p.id] !== undefined && chipDelta !== 0 && (
+                      <div style={{ fontSize: 9, color: deltaColor, fontFamily: "monospace" }}>{deltaStr}</div>
+                    )}
+
+                    {/* Bet */}
+                    {p.bet > 0 && (
+                      <div style={{ fontSize: 9, color: "#93c5fd", marginTop: 1 }}>bet:{p.bet}</div>
+                    )}
+                  </div>
                 </div>
               );
             })}
           </div>
 
-          <button onClick={resetGame} className="w-full text-sm text-gray-400 hover:text-white py-2">
+          {/* Showdown pot assignment */}
+          {frozenPots && (
+            <div className="bg-green-900 border border-green-700 rounded-xl p-3 space-y-2">
+              <div className="text-sm font-bold text-orange-300">Showdown — ポットを付与</div>
+              {frozenPots.map((fp, i) => {
+                const isSplit = fp.splitSelectedIds.length > 1 && fp.winnerId !== null;
+                return (
+                  <div key={i} className="bg-green-800 rounded-lg p-3 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-green-400">Pot {i + 1}</span>
+                      <span className="text-yellow-300 font-bold text-lg">{fp.amount}</span>
+                      {fp.winnerId !== null && (
+                        <span className="text-xs text-green-300">
+                          {isSplit
+                            ? fp.splitSelectedIds.map((id) => players.find((p) => p.id === id)?.name).join(" / ") + " で分割"
+                            : "→ " + players.find((p) => p.id === fp.winnerId)?.name}
+                        </span>
+                      )}
+                    </div>
+
+                    {!fp.splitMode && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {fp.eligibleIds.map((id) => {
+                          const isSelected = fp.winnerId === id && !isSplit;
+                          return (
+                            <button key={id} onClick={() => selectFrozenPotWinner(i, id)}
+                              className={`text-sm px-3 py-1.5 rounded font-bold transition-all ${
+                                isSelected
+                                  ? "bg-yellow-400 text-black ring-2 ring-yellow-200 shadow-lg scale-105"
+                                  : "bg-green-700 hover:bg-green-600 text-white"
+                              }`}>
+                              {isSelected ? "✓ " : ""}{players.find((p) => p.id === id)?.name}
+                            </button>
+                          );
+                        })}
+                        {fp.eligibleIds.length >= 2 && (
+                          <button onClick={() => toggleFrozenPotSplit(i)}
+                            className={`text-sm px-3 py-1.5 rounded font-bold transition-all ${
+                              isSplit ? "bg-purple-400 text-black ring-2 ring-purple-200 scale-105" : "bg-purple-800 hover:bg-purple-700"
+                            }`}>
+                            Split
+                          </button>
+                        )}
+                      </div>
+                    )}
+
+                    {fp.splitMode && (
+                      <div className="space-y-1.5">
+                        <div className="text-xs text-purple-300">分割するプレイヤーを選択</div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {fp.eligibleIds.map((id) => {
+                            const isSel = fp.splitSelectedIds.includes(id);
+                            return (
+                              <button key={id} onClick={() => toggleFrozenPotSplitPlayer(i, id)}
+                                className={`text-sm px-3 py-1.5 rounded font-bold transition-all ${
+                                  isSel ? "bg-purple-400 text-black ring-2 ring-purple-200 scale-105" : "bg-green-700 hover:bg-green-600"
+                                }`}>
+                                {isSel ? "✓ " : ""}{players.find((p) => p.id === id)?.name}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <div className="flex gap-1.5">
+                          {fp.splitSelectedIds.length >= 2 && (
+                            <button onClick={() => confirmFrozenPotSplit(i)}
+                              className="text-xs bg-purple-600 hover:bg-purple-500 px-3 py-1 rounded font-bold">
+                              {fp.splitSelectedIds.length}人で分割
+                            </button>
+                          )}
+                          <button onClick={() => toggleFrozenPotSplit(i)}
+                            className="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">
+                            キャンセル
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+              {frozenPots.every((fp) => fp.winnerId !== null) && (
+                <button onClick={finishShowdown}
+                  className="w-full bg-yellow-500 hover:bg-yellow-400 text-black font-bold py-3 rounded-lg text-base">
+                  次のハンドへ
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Street navigation */}
+          {!frozenPots && (
+            <div className="flex gap-2">
+              <button onClick={nextStreet} disabled={streetIndex === STREETS.length - 1}
+                className="flex-1 text-sm bg-blue-800 hover:bg-blue-700 disabled:opacity-40 py-2 rounded-lg font-bold">
+                {streetIndex < STREETS.length - 1 ? `→ ${STREET_LABELS[STREETS[streetIndex + 1]]}` : "River (最終)"}
+              </button>
+              <button onClick={openShowdown}
+                className="flex-1 text-sm bg-orange-700 hover:bg-orange-600 py-2 rounded-lg font-bold">
+                Showdown
+              </button>
+            </div>
+          )}
+
+          {/* Active player action panel */}
+          {activeIsActing && (
+            <div className="bg-green-900 border border-green-700 rounded-xl p-3 space-y-2">
+              {/* Header */}
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className={`text-xs font-bold animate-pulse ${isBbOptionActive ? "text-amber-300" : "text-yellow-400"}`}>
+                  {isBbOptionActive ? "BB OPTION" : "YOUR TURN"}
+                </span>
+                <span className="font-bold">{activePlayer.name}</span>
+                {activePosLabel && (
+                  <span className={`text-xs px-2 py-0.5 rounded font-bold ${
+                    activePosLabel.includes("BTN") ? "bg-yellow-600 text-black" :
+                    activePosLabel === "SB" ? "bg-orange-600" : "bg-red-700"
+                  }`}>{activePosLabel}</span>
+                )}
+                <span className="ml-auto text-yellow-300 text-sm font-mono">{activePlayer.chips} chips</span>
+              </div>
+              {activePlayer.bet > 0 && (
+                <div className="text-xs text-blue-300">ベット中: {activePlayer.bet}</div>
+              )}
+
+              {/* Quick bets */}
+              <div className="flex gap-1 flex-wrap items-center">
+                <span className="text-xs text-green-400">クイック:</span>
+                {quickBets.map(({ label, val }) => (
+                  <button key={label} onClick={() => quickBet(activePlayer.id, val)}
+                    className="text-xs bg-green-800 hover:bg-green-700 border border-green-600 px-2 py-0.5 rounded">
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Actions */}
+              <div className="flex gap-1.5 flex-wrap">
+                <input
+                  type="number"
+                  placeholder="合計ベット額"
+                  value={betInput[activePlayer.id] || ""}
+                  onChange={(e) => setBetInput((prev) => ({ ...prev, [activePlayer.id]: e.target.value }))}
+                  onKeyDown={(e) => e.key === "Enter" && placeBet(activePlayer.id)}
+                  className="flex-1 min-w-0 bg-green-800 border border-green-600 rounded px-3 py-1.5 text-right"
+                />
+                <button onClick={() => placeBet(activePlayer.id)}
+                  className="bg-blue-600 hover:bg-blue-500 px-3 py-1.5 rounded font-bold text-sm">
+                  {(street === "preflop" ? currentHighBet > bbAmount : currentHighBet > 0) ? "RAISE" : "BET"}
+                </button>
+                {(() => {
+                  const callAmount = Math.min(currentHighBet - activePlayer.bet, activePlayer.chips);
+                  return callAmount > 0 ? (
+                    <button onClick={() => callBet(activePlayer.id)}
+                      className="bg-green-600 hover:bg-green-500 px-3 py-1.5 rounded font-bold text-sm">
+                      CALL {callAmount}
+                    </button>
+                  ) : (
+                    <button onClick={() => check(activePlayer.id)}
+                      className="bg-green-800 hover:bg-green-700 border border-green-600 px-3 py-1.5 rounded font-bold text-sm">
+                      CHECK
+                    </button>
+                  );
+                })()}
+                <button onClick={() => doAllIn(activePlayer.id)}
+                  className="bg-orange-600 hover:bg-orange-500 px-3 py-1.5 rounded font-bold text-sm">
+                  ALL-IN
+                </button>
+                <button onClick={() => fold(activePlayer.id)}
+                  className="bg-red-700 hover:bg-red-600 px-3 py-1.5 rounded font-bold text-sm">
+                  FOLD
+                </button>
+              </div>
+            </div>
+          )}
+
+          <button onClick={resetGame} className="w-full text-sm text-green-600 hover:text-green-400 py-2">
             最初からやり直す
           </button>
         </div>
@@ -1010,62 +1026,75 @@ export default function Home() {
 
       {/* ===== RESULT ===== */}
       {gameState === "result" && (
-        <div className="max-w-md mx-auto space-y-4">
+        <div className="max-w-md mx-auto px-4 space-y-4 pb-8">
 
           {/* Chip standings */}
-          <div className="bg-green-800 rounded-xl p-4 space-y-2">
+          <div className="bg-green-900 border border-green-700 rounded-xl p-4 space-y-2">
             <h2 className="font-semibold text-lg text-yellow-300">チップ状況</h2>
-            {[...players]
-              .sort((a, b) => b.chips - a.chips)
-              .map((p) => {
-                const delta = p.chips - (sessionStartChips[p.id] ?? p.chips) - (totalRebuyChips[p.id] ?? 0);
-                const deltaStr = delta > 0 ? `+${delta}` : `${delta}`;
-                const deltaColor = delta > 0 ? "text-green-400" : delta < 0 ? "text-red-400" : "text-gray-400";
-                const rebuyNote = (totalRebuyChips[p.id] ?? 0) > 0 ? ` (リバイ+${totalRebuyChips[p.id]})` : "";
-                return (
-                  <div key={p.id} className="flex justify-between items-center bg-green-700 rounded px-3 py-2">
-                    <span className={p.chips === 0 ? "text-gray-400" : ""}>{p.name}</span>
-                    <div className="text-right">
-                      <span className="text-yellow-300 font-mono">{p.chips} chips</span>
-                      {sessionStartChips[p.id] !== undefined && (
-                        <span className={`text-sm font-mono ml-2 ${deltaColor}`}>
-                          ({deltaStr}{rebuyNote})
-                        </span>
-                      )}
-                    </div>
+            {[...players].sort((a, b) => b.chips - a.chips).map((p) => {
+              const delta = p.chips - (sessionStartChips[p.id] ?? p.chips) - (totalRebuyChips[p.id] ?? 0);
+              const deltaStr = delta > 0 ? `+${delta}` : `${delta}`;
+              const deltaColor = delta > 0 ? "text-green-400" : delta < 0 ? "text-red-400" : "text-gray-400";
+              const rebuyNote = (totalRebuyChips[p.id] ?? 0) > 0 ? ` (リバイ+${totalRebuyChips[p.id]})` : "";
+              return (
+                <div key={p.id} className="flex justify-between items-center bg-green-800 rounded px-3 py-2">
+                  <span className={p.chips === 0 ? "text-gray-400" : ""}>{p.name}</span>
+                  <div className="text-right">
+                    <span className="text-yellow-300 font-mono">{p.chips} chips</span>
+                    {sessionStartChips[p.id] !== undefined && (
+                      <span className={`text-sm font-mono ml-2 ${deltaColor}`}>({deltaStr}{rebuyNote})</span>
+                    )}
                   </div>
-                );
-              })}
+                </div>
+              );
+            })}
           </div>
 
           {/* Rebuy for broke players */}
           {brokePlayers.length > 0 && (
-            <div className="bg-gray-800 rounded-xl p-4 space-y-3">
+            <div className="bg-gray-900 border border-gray-700 rounded-xl p-4 space-y-3">
               <h2 className="font-semibold text-lg text-red-300">リバイ</h2>
               <p className="text-xs text-gray-400">上限: {rebuyAmount} chips / 1回</p>
-              {brokePlayers.map((p) => (
-                <button
-                  key={p.id}
-                  onClick={() => doAddon(p.id)}
-                  className="w-full bg-blue-600 hover:bg-blue-500 font-bold py-2 rounded"
-                >
-                  {p.name} がリバイ (+{rebuyAmount} chips)
-                </button>
-              ))}
+              {brokePlayers.map((p) => {
+                const inputKey = `rebuy-${p.id}`;
+                return (
+                  <div key={p.id} className="space-y-1.5">
+                    <div className="text-sm font-bold text-white">{p.name}</div>
+                    <div className="flex gap-2 items-center">
+                      <input
+                        id={inputKey}
+                        type="number"
+                        min={0}
+                        max={rebuyAmount}
+                        defaultValue={rebuyAmount}
+                        className="flex-1 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-right text-white"
+                      />
+                      <span className="text-xs text-gray-400 whitespace-nowrap">/ {rebuyAmount}</span>
+                      <button
+                        onClick={() => {
+                          const el = document.getElementById(inputKey) as HTMLInputElement | null;
+                          const val = Math.min(Math.max(0, parseInt(el?.value || "0") || 0), rebuyAmount);
+                          doAddon(p.id, val);
+                          if (el) el.value = String(rebuyAmount);
+                        }}
+                        className="bg-blue-600 hover:bg-blue-500 font-bold px-4 py-1.5 rounded whitespace-nowrap"
+                      >
+                        リバイ
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           )}
 
           <div className="flex gap-3">
-            <button
-              onClick={nextHand}
-              className="flex-1 bg-yellow-500 hover:bg-yellow-400 text-black font-bold py-3 rounded-xl"
-            >
-              次のハンド
+            <button onClick={nextHand}
+              className="flex-1 bg-yellow-500 hover:bg-yellow-400 text-black font-bold py-3 rounded-xl">
+              次のハンドへ
             </button>
-            <button
-              onClick={resetGame}
-              className="flex-1 bg-green-700 hover:bg-green-600 py-3 rounded-xl"
-            >
+            <button onClick={resetGame}
+              className="flex-1 bg-green-900 hover:bg-green-800 border border-green-700 py-3 rounded-xl">
               最初からやり直す
             </button>
           </div>
