@@ -216,6 +216,104 @@ test("1 non-folded non-allIn player after call → should skip streets", () => {
   assert(canAct <= 1, "should trigger showdown skip");
 });
 
+// ── Virtual card mode ─────────────────────────────────────────────────────
+
+const RANKS_T = ["2","3","4","5","6","7","8","9","T","J","Q","K","A"];
+const SUITS_T = ["♠","♥","♦","♣"];
+const FULL_DECK_T = SUITS_T.flatMap((s) => RANKS_T.map((r) => r + s));
+
+function shuffleDeckT(deck) {
+  const d = [...deck];
+  for (let i = d.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [d[i], d[j]] = [d[j], d[i]];
+  }
+  return d;
+}
+
+function dealCards(activePlayers) {
+  const deck = shuffleDeckT(FULL_DECK_T);
+  let di = 0;
+  const hands = {};
+  for (const p of activePlayers.filter((p) => !p.folded)) {
+    hands[p.id] = [deck[di++], deck[di++]];
+  }
+  const community = deck.slice(di, di + 5);
+  return { hands, community, deck };
+}
+
+console.log("\n=== Virtual card mode ===");
+
+test("deck has 52 unique cards", () => {
+  assertEqual(FULL_DECK_T.length, 52, "should be 52 cards");
+  const unique = new Set(FULL_DECK_T);
+  assertEqual(unique.size, 52, "all cards must be unique");
+});
+
+test("shuffle preserves all 52 cards", () => {
+  const shuffled = shuffleDeckT(FULL_DECK_T);
+  assertEqual(shuffled.length, 52);
+  const unique = new Set(shuffled);
+  assertEqual(unique.size, 52, "shuffled deck must have no duplicates");
+});
+
+test("deal: each player gets 2 unique hole cards", () => {
+  const players = [
+    { id: 1, folded: false }, { id: 2, folded: false }, { id: 3, folded: false },
+  ];
+  const { hands } = dealCards(players);
+  assert(Object.keys(hands).length === 3, "all 3 players should have hands");
+  for (const [, [c1, c2]] of Object.entries(hands)) {
+    assert(c1 !== c2, "two hole cards must be different");
+  }
+});
+
+test("deal: no card dealt to multiple players", () => {
+  const players = [
+    { id: 1, folded: false }, { id: 2, folded: false }, { id: 3, folded: false },
+  ];
+  const { hands } = dealCards(players);
+  const allCards = Object.values(hands).flat();
+  const unique = new Set(allCards);
+  assertEqual(unique.size, allCards.length, "no duplicate cards across hands");
+});
+
+test("deal: community cards don't overlap with hole cards", () => {
+  const players = [
+    { id: 1, folded: false }, { id: 2, folded: false }, { id: 3, folded: false },
+  ];
+  const { hands, community } = dealCards(players);
+  const holeCards = new Set(Object.values(hands).flat());
+  for (const card of community) {
+    assert(!holeCards.has(card), `community card ${card} must not be in any hand`);
+  }
+});
+
+test("deal: folded players receive no cards", () => {
+  const players = [
+    { id: 1, folded: false }, { id: 2, folded: true }, { id: 3, folded: false },
+  ];
+  const { hands } = dealCards(players);
+  assert(hands[1] !== undefined, "active player 1 should have hand");
+  assert(hands[2] === undefined, "folded player 2 should not have hand");
+  assert(hands[3] !== undefined, "active player 3 should have hand");
+});
+
+test("deal: community always has exactly 5 cards", () => {
+  const players = [{ id: 1, folded: false }, { id: 2, folded: false }];
+  const { community } = dealCards(players);
+  assertEqual(community.length, 5, "always 5 community cards");
+});
+
+test("community visibility: 0 preflop, 3 flop, 4 turn, 5 river", () => {
+  const visibleCount = (street) =>
+    street === "flop" ? 3 : street === "turn" ? 4 : street === "river" ? 5 : 0;
+  assertEqual(visibleCount("preflop"), 0);
+  assertEqual(visibleCount("flop"), 3);
+  assertEqual(visibleCount("turn"), 4);
+  assertEqual(visibleCount("river"), 5);
+});
+
 // ── Summary ───────────────────────────────────────────────────────────────
 console.log(`\n${"=".repeat(40)}`);
 console.log(`  ${passed + failed} tests: ${passed} passed, ${failed} failed`);

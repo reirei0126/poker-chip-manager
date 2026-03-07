@@ -32,6 +32,24 @@ const STREET_LABELS: Record<Street, string> = {
 
 const STORAGE_KEY = "poker-chip-manager-v1";
 
+// ── Card utilities ─────────────────────────────────────────────────────────
+const RANKS = ["2","3","4","5","6","7","8","9","T","J","Q","K","A"];
+const SUITS = ["♠","♥","♦","♣"];
+const FULL_DECK: string[] = SUITS.flatMap((s) => RANKS.map((r) => r + s));
+
+function shuffleDeck(deck: string[]): string[] {
+  const d = [...deck];
+  for (let i = d.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [d[i], d[j]] = [d[j], d[i]];
+  }
+  return d;
+}
+
+function cardColor(card: string): string {
+  return card.endsWith("♥") || card.endsWith("♦") ? "#ef4444" : "#111827";
+}
+
 // ── Pure helpers (outside component) ─────────────────────────────────
 
 function getPositions(dealerIdx: number, list: Player[]) {
@@ -128,6 +146,10 @@ export default function Home() {
   const [showSettings, setShowSettings] = useState(false);
   const [showEndConfirm, setShowEndConfirm] = useState(false);
   const [nameError, setNameError] = useState("");
+  const [useVirtualCards, setUseVirtualCards] = useState(false);
+  const [playerHands, setPlayerHands] = useState<Record<number, [string, string]>>({});
+  const [communityCards, setCommunityCards] = useState<string[]>([]);
+  const [viewingHandId, setViewingHandId] = useState<number | null>(null);
   const [sessionStartChips, setSessionStartChips] = useState<Record<number, number>>({});
   const [totalRebuyChips, setTotalRebuyChips] = useState<Record<number, number>>({});
   const [loaded, setLoaded] = useState(false);
@@ -157,6 +179,9 @@ export default function Home() {
         setActedThisStreet(s.actedThisStreet ?? []);
         setSessionStartChips(s.sessionStartChips ?? {});
         setTotalRebuyChips(s.totalRebuyChips ?? {});
+        setUseVirtualCards(s.useVirtualCards ?? false);
+        setPlayerHands(s.playerHands ?? {});
+        setCommunityCards(s.communityCards ?? []);
       }
     } catch {}
     setLoaded(true);
@@ -173,13 +198,15 @@ export default function Home() {
           street, dealerIndex, currentHighBet, activePlayerIndex, handContrib,
           frozenPots, sbIdx, bbIdx, rebuyAmount, actedThisStreet,
           sessionStartChips, totalRebuyChips,
+          useVirtualCards, playerHands, communityCards,
         })
       );
     } catch {}
   }, [loaded, gameState, players, startingChips, sbAmount, bbAmount, pot, winner,
     street, dealerIndex, currentHighBet, activePlayerIndex, handContrib,
     frozenPots, sbIdx, bbIdx, rebuyAmount, actedThisStreet,
-    sessionStartChips, totalRebuyChips]);
+    sessionStartChips, totalRebuyChips,
+    useVirtualCards, playerHands, communityCards]);
 
   // ── Internal helpers ──────────────────────────────────────────────
   const nextActiveFrom = (fromIdx: number, list: Player[]): number => {
@@ -229,6 +256,19 @@ export default function Home() {
     return { list, contribs, firstActive: nextActiveFrom(bb, list), sb, bb };
   };
 
+  // ── Card dealing ──────────────────────────────────────────────────
+  const dealCards = (activePlayers: Player[]) => {
+    if (!useVirtualCards) return;
+    const deck = shuffleDeck(FULL_DECK);
+    let di = 0;
+    const hands: Record<number, [string, string]> = {};
+    for (const p of activePlayers.filter((p) => !p.folded)) {
+      hands[p.id] = [deck[di++], deck[di++]];
+    }
+    setPlayerHands(hands);
+    setCommunityCards(deck.slice(di, di + 5));
+  };
+
   // ── Setup ─────────────────────────────────────────────────────────
   const addPlayer = () => {
     const name = newPlayerName.trim();
@@ -263,6 +303,7 @@ export default function Home() {
     setActedThisStreet([]);
     setSessionStartChips(Object.fromEntries(players.map((p) => [p.id, p.chips])));
     setTotalRebuyChips(Object.fromEntries(players.map((p) => [p.id, 0])));
+    dealCards(list);
     setGameState("betting");
   };
 
@@ -575,6 +616,7 @@ export default function Home() {
     setBbIdx(bb);
     setActedThisStreet([]);
     setShowSettings(false);
+    dealCards(list);
     setGameState("betting");
   };
 
@@ -603,6 +645,9 @@ export default function Home() {
     setBbIdx(0);
     setSessionStartChips({});
     setTotalRebuyChips({});
+    setPlayerHands({});
+    setCommunityCards([]);
+    setViewingHandId(null);
     localStorage.removeItem(STORAGE_KEY);
   };
 
@@ -656,6 +701,19 @@ export default function Home() {
         <div className="max-w-md mx-auto px-4 space-y-4 pb-8">
           <div className="bg-green-800 rounded-xl p-4 space-y-3">
             <h2 className="text-xl font-semibold">ゲーム設定</h2>
+            {/* Card mode */}
+            <div className="flex gap-2">
+              {[{ label: "リアルカード", val: false }, { label: "バーチャルカード", val: true }].map(({ label, val }) => (
+                <button key={label} onClick={() => setUseVirtualCards(val)}
+                  className={`flex-1 py-2 rounded-lg font-bold text-sm transition-all ${
+                    useVirtualCards === val
+                      ? "bg-yellow-500 text-black"
+                      : "bg-green-700 text-green-200 hover:bg-green-600"
+                  }`}>
+                  {label}
+                </button>
+              ))}
+            </div>
             {[
               { label: "初期チップ", value: startingChips, set: setStartingChips },
               { label: "SB", value: sbAmount, set: setSbAmount },
@@ -778,18 +836,36 @@ export default function Home() {
                 ))}
               </div>
 
-              {/* Pot display */}
-              <div className="absolute inset-0 flex flex-col items-center justify-center">
+              {/* Pot display + community cards */}
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-1">
                 <div className="text-green-300 font-semibold tracking-widest" style={{ fontSize: 9 }}>POT</div>
-                <div className="text-yellow-400 font-bold leading-none" style={{ fontSize: 28 }}>{totalCurrentPot}</div>
+                <div className="text-yellow-400 font-bold leading-none" style={{ fontSize: 26 }}>{totalCurrentPot}</div>
                 {currentHighBet > 0 && (
-                  <div className="text-blue-300 mt-0.5" style={{ fontSize: 9 }}>Bet: {currentHighBet}</div>
+                  <div className="text-blue-300" style={{ fontSize: 9 }}>Bet: {currentHighBet}</div>
                 )}
                 {liveSidePots.length > 1 && liveSidePots.map((sp, i) => (
-                  <div key={i} className="text-orange-300" style={{ fontSize: 8 }}>
-                    Pot{i + 1}: {sp.amount}
-                  </div>
+                  <div key={i} className="text-orange-300" style={{ fontSize: 8 }}>Pot{i + 1}: {sp.amount}</div>
                 ))}
+                {/* Community cards */}
+                {useVirtualCards && communityCards.length > 0 && (() => {
+                  const visibleCount = street === "flop" ? 3 : street === "turn" ? 4 : street === "river" ? 5 : 0;
+                  return (
+                    <div style={{ display: "flex", gap: 3, marginTop: 2 }}>
+                      {[0,1,2,3,4].map((i) => (
+                        <div key={i} style={{
+                          width: 20, height: 28, borderRadius: 3,
+                          background: i < visibleCount ? "#fff" : "#1a3a25",
+                          border: i < visibleCount ? "none" : "1px solid #2d6a3a",
+                          display: "flex", alignItems: "center", justifyContent: "center",
+                          fontSize: 9, fontWeight: 700, lineHeight: 1,
+                          color: i < visibleCount ? cardColor(communityCards[i]) : "transparent",
+                        }}>
+                          {i < visibleCount ? communityCards[i] : ""}
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
               </div>
             </div>
 
@@ -877,6 +953,23 @@ export default function Home() {
           {frozenPots && (
             <div className="bg-green-900 border border-green-700 rounded-xl p-3 space-y-2">
               <div className="text-sm font-bold text-orange-300">Showdown — ポットを付与</div>
+
+              {/* Showdown hand reveal (virtual cards) */}
+              {useVirtualCards && Object.keys(playerHands).length > 0 && (
+                <div className="bg-green-950 rounded-lg p-2 space-y-1">
+                  <div className="text-xs text-green-400 font-bold">ハンド公開</div>
+                  <div className="flex flex-wrap gap-2">
+                    {players.filter((p) => !p.folded && playerHands[p.id]).map((p) => (
+                      <div key={p.id} className="flex items-center gap-1 bg-green-800 rounded px-2 py-1">
+                        <span className="text-xs font-bold text-white">{p.name}:</span>
+                        {playerHands[p.id].map((card, i) => (
+                          <span key={i} style={{ fontSize: 14, fontWeight: 700, color: cardColor(card) }}>{card}</span>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
               {frozenPots.map((fp, i) => {
                 const isSplit = fp.splitSelectedIds.length > 1 && fp.winnerId !== null;
                 return (
@@ -1030,6 +1123,14 @@ export default function Home() {
                   FOLD
                 </button>
               </div>
+
+              {/* Hand peek button (virtual cards only) */}
+              {useVirtualCards && playerHands[activePlayer.id] && (
+                <button onClick={() => setViewingHandId(activePlayer.id)}
+                  className="w-full bg-indigo-700 hover:bg-indigo-600 py-1.5 rounded font-bold text-sm">
+                  手札を確認
+                </button>
+              )}
             </div>
           )}
 
@@ -1180,6 +1281,41 @@ export default function Home() {
           </button>
         </div>
       )}
+      {/* Hand peek modal (virtual cards) */}
+      {viewingHandId !== null && (() => {
+        const hand = playerHands[viewingHandId];
+        const player = players.find((p) => p.id === viewingHandId);
+        if (!hand) return null;
+        return (
+          <div
+            onClick={() => setViewingHandId(null)}
+            style={{
+              position: "fixed", inset: 0, zIndex: 100,
+              background: "rgba(0,0,0,0.88)",
+              display: "flex", flexDirection: "column",
+              alignItems: "center", justifyContent: "center", gap: 20,
+            }}
+          >
+            <div style={{ fontSize: 16, color: "#fde047", fontWeight: 700 }}>
+              {player?.name} の手札
+            </div>
+            <div style={{ display: "flex", gap: 16 }}>
+              {hand.map((card, i) => (
+                <div key={i} style={{
+                  width: 80, height: 112, borderRadius: 12,
+                  background: "#fff", border: "2px solid #d1d5db",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontSize: 36, fontWeight: 700, color: cardColor(card),
+                  boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+                }}>
+                  {card}
+                </div>
+              ))}
+            </div>
+            <div style={{ fontSize: 13, color: "#9ca3af" }}>タップして閉じる</div>
+          </div>
+        );
+      })()}
     </main>
   );
 }
