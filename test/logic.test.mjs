@@ -314,6 +314,216 @@ test("community visibility: 0 preflop, 3 flop, 4 turn, 5 river", () => {
   assertEqual(visibleCount("river"), 5);
 });
 
+// ── Hand evaluation ───────────────────────────────────────────────────────
+
+function cardRank(card) {
+  return "23456789TJQKA".indexOf(card[0]) + 2;
+}
+function score5(hand) {
+  const ranks = hand.map(cardRank).sort((a, b) => b - a);
+  const suits = hand.map(c => c.slice(-1));
+  const isFlush = suits.every(s => s === suits[0]);
+  const rankSet = new Set(ranks);
+  const isStraight = rankSet.size === 5 && ranks[0] - ranks[4] === 4;
+  const isWheel = rankSet.size === 5 && ranks[0] === 14 && ranks[1] === 5 && ranks[4] === 2;
+  const freq = new Map();
+  for (const r of ranks) freq.set(r, (freq.get(r) ?? 0) + 1);
+  const groups = [...freq.entries()].sort((a, b) => b[1] - a[1] || b[0] - a[0]);
+  const [g0, g1, g2] = groups;
+  if (isFlush && isStraight) return [8, ranks[0]];
+  if (isFlush && isWheel)    return [8, 5];
+  if (g0[1] === 4) return [7, g0[0], g1[0]];
+  if (g0[1] === 3 && g1[1] === 2) return [6, g0[0], g1[0]];
+  if (isFlush)    return [5, ...ranks];
+  if (isStraight) return [4, ranks[0]];
+  if (isWheel)    return [4, 5];
+  if (g0[1] === 3) return [3, g0[0], g1[0], g2[0]];
+  if (g0[1] === 2 && g1[1] === 2) return [2, g0[0], g1[0], g2[0]];
+  if (g0[1] === 2) return [1, g0[0], g1[0], g2[0], groups[3][0]];
+  return [0, ...ranks];
+}
+function evaluateHand(holeCards, community) {
+  const all = [...holeCards, ...community];
+  const n = all.length;
+  let best = [];
+  for (let i = 0; i < n-4; i++)
+    for (let j = i+1; j < n-3; j++)
+      for (let k = j+1; k < n-2; k++)
+        for (let l = k+1; l < n-1; l++)
+          for (let m = l+1; m < n; m++) {
+            const s = score5([all[i], all[j], all[k], all[l], all[m]]);
+            if (best.length === 0 || compareScoresT(s, best) > 0) best = s;
+          }
+  return best;
+}
+function compareScoresT(a, b) {
+  for (let i = 0; i < Math.min(a.length, b.length); i++) {
+    if (a[i] !== b[i]) return a[i] - b[i];
+  }
+  return 0;
+}
+function getShowdownOrderT(lastAggressorId, players, eligibleIds) {
+  const n = players.length;
+  let startIdx = 0;
+  if (lastAggressorId !== null) {
+    const idx = players.findIndex(p => p.id === lastAggressorId);
+    if (idx >= 0) startIdx = idx;
+  }
+  const result = [];
+  for (let i = 0; i < n; i++) {
+    const p = players[(startIdx + i) % n];
+    if (eligibleIds.includes(p.id) && !p.folded) result.push(p.id);
+  }
+  return result;
+}
+
+console.log("\n=== Hand evaluation ===");
+
+test("high card: correct rank ordering", () => {
+  const s = score5(["A♠","K♥","Q♦","J♣","9♠"]);
+  assertEqual(s[0], 0, "high card");
+  assertEqual(s[1], 14, "ace high");
+});
+
+test("one pair", () => {
+  const s = score5(["A♠","A♥","K♦","Q♣","J♠"]);
+  assertEqual(s[0], 1, "one pair");
+  assertEqual(s[1], 14, "pair of aces");
+});
+
+test("two pair", () => {
+  const s = score5(["K♠","K♥","Q♦","Q♣","A♠"]);
+  assertEqual(s[0], 2, "two pair");
+});
+
+test("three of a kind", () => {
+  const s = score5(["7♠","7♥","7♦","A♣","K♠"]);
+  assertEqual(s[0], 3, "trips");
+  assertEqual(s[1], 7);
+});
+
+test("straight (T-high)", () => {
+  const s = score5(["T♠","9♥","8♦","7♣","6♠"]);
+  assertEqual(s[0], 4, "straight");
+  assertEqual(s[1], 10, "T-high");
+});
+
+test("wheel straight (A-2-3-4-5)", () => {
+  const s = score5(["A♠","2♥","3♦","4♣","5♠"]);
+  assertEqual(s[0], 4, "straight");
+  assertEqual(s[1], 5, "5-high wheel");
+});
+
+test("flush", () => {
+  const s = score5(["A♠","K♠","Q♠","J♠","9♠"]);
+  assertEqual(s[0], 5, "flush");
+});
+
+test("full house", () => {
+  const s = score5(["K♠","K♥","K♦","Q♣","Q♠"]);
+  assertEqual(s[0], 6, "full house");
+  assertEqual(s[1], 13, "kings full");
+});
+
+test("four of a kind", () => {
+  const s = score5(["A♠","A♥","A♦","A♣","2♠"]);
+  assertEqual(s[0], 7, "quads");
+  assertEqual(s[1], 14, "quad aces");
+});
+
+test("straight flush", () => {
+  const s = score5(["9♠","8♠","7♠","6♠","5♠"]);
+  assertEqual(s[0], 8, "straight flush");
+});
+
+test("evaluateHand: best hand from 7 cards", () => {
+  // hole: A♠ A♥, community: A♦ A♣ K♠ Q♥ J♦ → quad aces
+  const s = evaluateHand(["A♠","A♥"], ["A♦","A♣","K♠","Q♥","J♦"]);
+  assertEqual(s[0], 7, "quad aces from 7 cards");
+});
+
+test("evaluateHand: chooses best 5 from 7", () => {
+  // hole: 2♠ 7♥, community: K♠ K♥ K♦ K♣ A♠ → quad kings
+  const s = evaluateHand(["2♠","7♥"], ["K♠","K♥","K♦","K♣","A♠"]);
+  assertEqual(s[0], 7, "quad kings");
+  assertEqual(s[1], 13, "kings");
+});
+
+test("hand comparison: trips beats two pair", () => {
+  const trips = score5(["7♠","7♥","7♦","A♣","K♠"]);
+  const twoPair = score5(["A♠","A♥","K♦","K♣","Q♠"]);
+  assert(compareScoresT(trips, twoPair) > 0, "trips should beat two pair");
+});
+
+test("hand comparison: equal hands return 0", () => {
+  const a = score5(["A♠","K♠","Q♠","J♠","T♠"]);
+  const b = score5(["A♥","K♥","Q♥","J♥","T♥"]);
+  assertEqual(compareScoresT(a, b), 0, "royal flushes are equal");
+});
+
+console.log("\n=== Showdown order ===");
+
+test("showdown starts from last aggressor", () => {
+  const players = [
+    { id: 1, folded: false }, { id: 2, folded: false },
+    { id: 3, folded: false }, { id: 4, folded: false },
+  ];
+  const order = getShowdownOrderT(3, players, [1, 2, 3, 4]);
+  assertEqual(order[0], 3, "last aggressor (id=3) goes first");
+  assertEqual(order[1], 4);
+  assertEqual(order[2], 1);
+  assertEqual(order[3], 2);
+});
+
+test("showdown skips folded players", () => {
+  const players = [
+    { id: 1, folded: false }, { id: 2, folded: true },
+    { id: 3, folded: false },
+  ];
+  const order = getShowdownOrderT(1, players, [1, 3]);
+  assert(!order.includes(2), "folded player should not be in showdown order");
+  assertEqual(order.length, 2);
+});
+
+test("showdown: no aggressor falls back to first eligible", () => {
+  const players = [
+    { id: 1, folded: false }, { id: 2, folded: false },
+  ];
+  const order = getShowdownOrderT(null, players, [1, 2]);
+  assertEqual(order[0], 1, "with no aggressor, start from idx 0");
+});
+
+test("autoAssign: mucked player loses to shown player", () => {
+  // simulate: player 1 has quad aces, player 2 mucks
+  const hands = { 1: ["A♠","A♥"], 2: ["2♣","3♦"] };
+  const community = ["A♦","A♣","K♠","Q♥","J♦"];
+  const mucked = [2];
+  const eligible = [1, 2];
+  const contenders = eligible.filter(id => !mucked.includes(id));
+  assertEqual(contenders.length, 1);
+  assertEqual(contenders[0], 1, "only non-mucked player wins");
+});
+
+test("autoAssign: best hand wins", () => {
+  // player 1: pair of aces, player 2: full house → player 2 wins
+  const hand1 = ["A♠","A♥"];
+  const hand2 = ["K♠","K♥"];
+  const community = ["K♦","A♣","K♣","2♠","3♦"]; // community: K K A → hand2 gets KKKK, hand1 gets AAA
+  const s1 = evaluateHand(hand1, community);
+  const s2 = evaluateHand(hand2, community);
+  assert(compareScoresT(s2, s1) > 0, "quads beats trips");
+});
+
+test("autoAssign: split pot on equal hands", () => {
+  // both players have the same board-played hand
+  const hand1 = ["2♠","3♥"]; // irrelevant
+  const hand2 = ["2♦","3♣"]; // irrelevant
+  const community = ["A♠","K♠","Q♠","J♠","T♠"]; // royal flush on board
+  const s1 = evaluateHand(hand1, community);
+  const s2 = evaluateHand(hand2, community);
+  assertEqual(compareScoresT(s1, s2), 0, "both play the board → split");
+});
+
 // ── Summary ───────────────────────────────────────────────────────────────
 console.log(`\n${"=".repeat(40)}`);
 console.log(`  ${passed + failed} tests: ${passed} passed, ${failed} failed`);

@@ -50,6 +50,85 @@ function cardColor(card: string): string {
   return card.endsWith("♥") || card.endsWith("♦") ? "#ef4444" : "#111827";
 }
 
+// ── Hand evaluation ────────────────────────────────────────────────────────
+
+function cardRank(card: string): number {
+  return "23456789TJQKA".indexOf(card[0]) + 2;
+}
+
+// Score a 5-card hand; higher array = better hand
+function score5(hand: string[]): number[] {
+  const ranks = hand.map(cardRank).sort((a, b) => b - a);
+  const suits = hand.map((c) => c.slice(-1));
+  const isFlush = suits.every((s) => s === suits[0]);
+  const rankSet = new Set(ranks);
+  const isStraight = rankSet.size === 5 && ranks[0] - ranks[4] === 4;
+  const isWheel = rankSet.size === 5 &&
+    ranks[0] === 14 && ranks[1] === 5 && ranks[4] === 2;
+
+  const freq = new Map<number, number>();
+  for (const r of ranks) freq.set(r, (freq.get(r) ?? 0) + 1);
+  const groups = [...freq.entries()].sort((a, b) => b[1] - a[1] || b[0] - a[0]);
+  const [g0, g1, g2] = groups;
+
+  if (isFlush && isStraight) return [8, ranks[0]];
+  if (isFlush && isWheel)    return [8, 5];
+  if (g0[1] === 4) return [7, g0[0], g1[0]];
+  if (g0[1] === 3 && g1[1] === 2) return [6, g0[0], g1[0]];
+  if (isFlush)    return [5, ...ranks];
+  if (isStraight) return [4, ranks[0]];
+  if (isWheel)    return [4, 5];
+  if (g0[1] === 3) return [3, g0[0], g1[0], g2[0]];
+  if (g0[1] === 2 && g1[1] === 2) return [2, g0[0], g1[0], g2[0]];
+  if (g0[1] === 2) return [1, g0[0], g1[0], g2[0], groups[3][0]];
+  return [0, ...ranks];
+}
+
+// Best 5-card hand from hole cards + community (up to 7 cards total)
+function evaluateHand(holeCards: [string, string], community: string[]): number[] {
+  const all = [...holeCards, ...community];
+  const n = all.length;
+  let best: number[] = [];
+  for (let i = 0; i < n - 4; i++)
+    for (let j = i + 1; j < n - 3; j++)
+      for (let k = j + 1; k < n - 2; k++)
+        for (let l = k + 1; l < n - 1; l++)
+          for (let m = l + 1; m < n; m++) {
+            const s = score5([all[i], all[j], all[k], all[l], all[m]]);
+            if (best.length === 0 || compareScores(s, best) > 0) best = s;
+          }
+  return best;
+}
+
+function compareScores(a: number[], b: number[]): number {
+  for (let i = 0; i < Math.min(a.length, b.length); i++) {
+    if (a[i] !== b[i]) return a[i] - b[i];
+  }
+  return 0;
+}
+
+// Clockwise showdown order starting from lastAggressor (or fallback)
+function getShowdownOrder(
+  lastAggressorId: number | null,
+  players: Player[],
+  eligibleIds: number[]
+): number[] {
+  const n = players.length;
+  let startIdx = 0;
+  if (lastAggressorId !== null) {
+    const idx = players.findIndex((p) => p.id === lastAggressorId);
+    if (idx >= 0) startIdx = idx;
+  }
+  const result: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const p = players[(startIdx + i) % n];
+    if (eligibleIds.includes(p.id) && !p.folded) result.push(p.id);
+  }
+  return result;
+}
+
+const HAND_NAMES = ["ハイカード","ワンペア","ツーペア","スリーカード","ストレート","フラッシュ","フルハウス","フォーカード","ストレートフラッシュ"];
+
 // ── Pure helpers (outside component) ─────────────────────────────────
 
 function getPositions(dealerIdx: number, list: Player[]) {
@@ -150,6 +229,10 @@ export default function Home() {
   const [playerHands, setPlayerHands] = useState<Record<number, [string, string]>>({});
   const [communityCards, setCommunityCards] = useState<string[]>([]);
   const [viewingHandId, setViewingHandId] = useState<number | null>(null);
+  const [lastAggressorId, setLastAggressorId] = useState<number | null>(null);
+  const [showdownQueue, setShowdownQueue] = useState<number[]>([]);
+  const [showdownRevealed, setShowdownRevealed] = useState<number[]>([]);
+  const [showdownMucked, setShowdownMucked] = useState<number[]>([]);
   const [sessionStartChips, setSessionStartChips] = useState<Record<number, number>>({});
   const [totalRebuyChips, setTotalRebuyChips] = useState<Record<number, number>>({});
   const [loaded, setLoaded] = useState(false);
@@ -182,6 +265,10 @@ export default function Home() {
         setUseVirtualCards(s.useVirtualCards ?? false);
         setPlayerHands(s.playerHands ?? {});
         setCommunityCards(s.communityCards ?? []);
+        setLastAggressorId(s.lastAggressorId ?? null);
+        setShowdownQueue(s.showdownQueue ?? []);
+        setShowdownRevealed(s.showdownRevealed ?? []);
+        setShowdownMucked(s.showdownMucked ?? []);
       }
     } catch {}
     setLoaded(true);
@@ -199,6 +286,7 @@ export default function Home() {
           frozenPots, sbIdx, bbIdx, rebuyAmount, actedThisStreet,
           sessionStartChips, totalRebuyChips,
           useVirtualCards, playerHands, communityCards,
+          lastAggressorId, showdownQueue, showdownRevealed, showdownMucked,
         })
       );
     } catch {}
@@ -206,7 +294,8 @@ export default function Home() {
     street, dealerIndex, currentHighBet, activePlayerIndex, handContrib,
     frozenPots, sbIdx, bbIdx, rebuyAmount, actedThisStreet,
     sessionStartChips, totalRebuyChips,
-    useVirtualCards, playerHands, communityCards]);
+    useVirtualCards, playerHands, communityCards,
+    lastAggressorId, showdownQueue, showdownRevealed, showdownMucked]);
 
   // ── Internal helpers ──────────────────────────────────────────────
   const nextActiveFrom = (fromIdx: number, list: Player[]): number => {
@@ -366,6 +455,7 @@ export default function Home() {
     const newActed = markActed(playerId, actedThisStreet);
     setCurrentHighBet(newHighBet);
     setHandContrib(newContrib);
+    setLastAggressorId(playerId); // any successful placeBet is a bet or raise
     setBetInput((prev) => ({ ...prev, [playerId]: "" }));
     setActedThisStreet(newActed);
     if (isStreetComplete(updated, newActed, newHighBet)) {
@@ -410,6 +500,7 @@ export default function Home() {
     setCurrentHighBet(newHighBet);
     setHandContrib(newContrib);
     setActedThisStreet(newActed);
+    if (newBet > currentHighBet) setLastAggressorId(playerId); // raise or first bet
     if (isStreetComplete(updated, newActed, newHighBet)) {
       advanceStreetOrShowdown(updated, newContrib);
     } else {
@@ -487,17 +578,65 @@ export default function Home() {
     setPot((prev) => prev + totalBets);
     setPlayers(list.map((p) => ({ ...p, bet: 0 })));
     setActedThisStreet([]);
-    setFrozenPots(
-      pots.map((p) => ({
-        ...p,
-        winnerId: p.eligibleIds.length === 1 ? p.eligibleIds[0] : null,
-        splitMode: false,
-        splitSelectedIds: [],
-      }))
-    );
+    const frozenList = pots.map((p) => ({
+      ...p,
+      winnerId: p.eligibleIds.length === 1 ? p.eligibleIds[0] : null,
+      splitMode: false,
+      splitSelectedIds: [],
+    }));
+    setFrozenPots(frozenList);
+
+    if (useVirtualCards) {
+      // Only contested pots need showdown queue
+      const contested = new Set<number>();
+      for (const p of pots) {
+        if (p.eligibleIds.length > 1) p.eligibleIds.forEach((id) => contested.add(id));
+      }
+      const queue = getShowdownOrder(lastAggressorId, list, [...contested]);
+      setShowdownQueue(queue);
+      setShowdownRevealed([]);
+      setShowdownMucked([]);
+    }
   };
 
   const openShowdown = () => openShowdownWith(players, handContrib);
+
+  const autoAssignWinners = (pots: FrozenPot[], muckedIds: number[]) => {
+    const updated = pots.map((fp) => {
+      if (fp.winnerId !== null) return fp; // already auto-assigned (single eligible)
+      const contenders = fp.eligibleIds.filter((id) => !muckedIds.includes(id));
+      if (contenders.length === 0) {
+        // all mucked — give to last eligible (edge case)
+        return { ...fp, winnerId: fp.eligibleIds[0] ?? null };
+      }
+      if (contenders.length === 1) {
+        return { ...fp, winnerId: contenders[0], splitSelectedIds: [], splitMode: false };
+      }
+      const scores = contenders.map((id) => ({
+        id,
+        score: evaluateHand(playerHands[id] ?? ["2♠", "3♦"], communityCards),
+      }));
+      const bestScore = scores.reduce((a, b) => compareScores(a.score, b.score) >= 0 ? a : b).score;
+      const winners = scores.filter((s) => compareScores(s.score, bestScore) === 0);
+      if (winners.length === 1) {
+        return { ...fp, winnerId: winners[0].id, splitSelectedIds: [], splitMode: false };
+      }
+      return { ...fp, winnerId: winners[0].id, splitSelectedIds: winners.map((w) => w.id), splitMode: false };
+    });
+    setFrozenPots(updated);
+  };
+
+  const handleShowdownAction = (playerId: number, action: "show" | "muck") => {
+    const newQueue = showdownQueue.slice(1);
+    const newRevealed = action === "show" ? [...showdownRevealed, playerId] : showdownRevealed;
+    const newMucked = action === "muck" ? [...showdownMucked, playerId] : showdownMucked;
+    setShowdownQueue(newQueue);
+    setShowdownRevealed(newRevealed);
+    setShowdownMucked(newMucked);
+    if (newQueue.length === 0) {
+      autoAssignWinners(frozenPots!, newMucked);
+    }
+  };
 
   // Showdown: just record winner/split selection (chips applied at finishShowdown)
   const selectFrozenPotWinner = (potIndex: number, winnerId: number) => {
@@ -615,6 +754,10 @@ export default function Home() {
     setSbIdx(sb);
     setBbIdx(bb);
     setActedThisStreet([]);
+    setLastAggressorId(null);
+    setShowdownQueue([]);
+    setShowdownRevealed([]);
+    setShowdownMucked([]);
     setShowSettings(false);
     dealCards(list);
     setGameState("betting");
@@ -648,6 +791,10 @@ export default function Home() {
     setPlayerHands({});
     setCommunityCards([]);
     setViewingHandId(null);
+    setLastAggressorId(null);
+    setShowdownQueue([]);
+    setShowdownRevealed([]);
+    setShowdownMucked([]);
     localStorage.removeItem(STORAGE_KEY);
   };
 
@@ -949,25 +1096,84 @@ export default function Home() {
             })}
           </div>
 
+          {/* Showdown queue UI (virtual cards) */}
+          {frozenPots && useVirtualCards && showdownQueue.length > 0 && (() => {
+            const currentId = showdownQueue[0];
+            const currentPlayer = players.find((p) => p.id === currentId);
+            return (
+              <div className="bg-green-900 border border-green-700 rounded-xl p-3 space-y-3">
+                <div className="text-sm font-bold text-orange-300">
+                  ショーダウン — {showdownQueue.length}人残り
+                </div>
+
+                {/* Previously revealed hands */}
+                {showdownRevealed.length > 0 && (
+                  <div className="space-y-1">
+                    <div className="text-xs text-green-400 font-bold">公開済み</div>
+                    {showdownRevealed.map((id) => {
+                      const p = players.find((pl) => pl.id === id);
+                      const h = playerHands[id];
+                      if (!h) return null;
+                      const score = evaluateHand(h, communityCards);
+                      return (
+                        <div key={id} className="flex items-center gap-2 bg-green-800 rounded px-2 py-1.5">
+                          <span className="text-xs font-bold text-white">{p?.name}:</span>
+                          {h.map((card, i) => (
+                            <span key={i} style={{ fontSize: 15, fontWeight: 700, color: cardColor(card) }}>{card}</span>
+                          ))}
+                          <span className="text-xs text-yellow-300 ml-auto">{HAND_NAMES[score[0]]}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* Current player */}
+                <div className="bg-green-800 rounded-lg p-3 space-y-2 border border-yellow-500/50">
+                  <div className="text-sm font-bold text-yellow-300">{currentPlayer?.name} の番</div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => handleShowdownAction(currentId, "show")}
+                      className="flex-1 bg-blue-600 hover:bg-blue-500 font-bold py-2.5 rounded text-sm"
+                    >
+                      手札を見せる
+                    </button>
+                    <button
+                      onClick={() => handleShowdownAction(currentId, "muck")}
+                      className="flex-1 bg-gray-700 hover:bg-gray-600 font-bold py-2.5 rounded text-sm"
+                    >
+                      マック
+                    </button>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+
           {/* Showdown pot assignment */}
-          {frozenPots && (
+          {frozenPots && (!useVirtualCards || showdownQueue.length === 0) && (
             <div className="bg-green-900 border border-green-700 rounded-xl p-3 space-y-2">
               <div className="text-sm font-bold text-orange-300">Showdown — ポットを付与</div>
 
-              {/* Showdown hand reveal (virtual cards) */}
-              {useVirtualCards && Object.keys(playerHands).length > 0 && (
+              {/* Revealed hands summary (virtual cards, after showdown) */}
+              {useVirtualCards && showdownRevealed.length > 0 && (
                 <div className="bg-green-950 rounded-lg p-2 space-y-1">
                   <div className="text-xs text-green-400 font-bold">ハンド公開</div>
-                  <div className="flex flex-wrap gap-2">
-                    {players.filter((p) => !p.folded && playerHands[p.id]).map((p) => (
-                      <div key={p.id} className="flex items-center gap-1 bg-green-800 rounded px-2 py-1">
-                        <span className="text-xs font-bold text-white">{p.name}:</span>
-                        {playerHands[p.id].map((card, i) => (
+                  {showdownRevealed.map((id) => {
+                    const p = players.find((pl) => pl.id === id);
+                    const h = playerHands[id];
+                    if (!h) return null;
+                    const score = evaluateHand(h, communityCards);
+                    return (
+                      <div key={id} className="flex items-center gap-2 bg-green-800 rounded px-2 py-1">
+                        <span className="text-xs font-bold text-white">{p?.name}:</span>
+                        {h.map((card, i) => (
                           <span key={i} style={{ fontSize: 14, fontWeight: 700, color: cardColor(card) }}>{card}</span>
                         ))}
+                        <span className="text-xs text-yellow-300 ml-auto">{HAND_NAMES[score[0]]}</span>
                       </div>
-                    ))}
-                  </div>
+                    );
+                  })}
                 </div>
               )}
               {frozenPots.map((fp, i) => {
